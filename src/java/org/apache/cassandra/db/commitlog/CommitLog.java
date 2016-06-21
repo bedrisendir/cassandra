@@ -37,6 +37,7 @@ import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ParameterizedClass;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.commitlog.capi.ICommitLog;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.schema.CompressionParams;
 import org.apache.cassandra.io.compress.ICompressor;
@@ -57,7 +58,7 @@ import static org.apache.cassandra.utils.FBUtilities.updateChecksumInt;
  * Commit Log tracks every write operation into the system. The aim of the commit log is to be able to
  * successfully recover data that was not stored to disk via the Memtable.
  */
-public class CommitLog implements CommitLogMBean
+public class CommitLog implements CommitLogMBean,ICommitLog
 {
     private static final Logger logger = LoggerFactory.getLogger(CommitLog.class);
 
@@ -578,4 +579,10 @@ public class CommitLog implements CommitLogMBean
             return encryptionContext;
         }
     }
+
+	@Override
+	public void await() {
+		// TODO Auto-generated method stub
+		
+	}
 }

@@ -280,35 +280,57 @@ public class DatabaseDescriptor
     {
         conf = config;
 
-        if (conf.commitlog_sync == null)
-        {
-            throw new ConfigurationException("Missing required directive CommitLogSync", false);
-        }
+        if (conf.commitlog_type == null) {
+       	 throw new ConfigurationException("Missing required directive CommitlogType", false);
+       }
+       if (conf.commitlog_type == Config.CommitLogType.CommitLog) {
+       	if (conf.commitlog_sync == null)
+       	{
+       		throw new ConfigurationException("Missing required directive CommitLogSync", false);
+       	}
 
-        if (conf.commitlog_sync == Config.CommitLogSync.batch)
-        {
-            if (conf.commitlog_sync_batch_window_in_ms == null)
-            {
-                throw new ConfigurationException("Missing value for commitlog_sync_batch_window_in_ms: Double expected.", false);
-            }
-            else if (conf.commitlog_sync_period_in_ms != null)
-            {
-                throw new ConfigurationException("Batch sync specified, but commitlog_sync_period_in_ms found. Only specify commitlog_sync_batch_window_in_ms when using batch sync", false);
-            }
-            logger.debug("Syncing log with a batch window of {}", conf.commitlog_sync_batch_window_in_ms);
-        }
-        else
-        {
-            if (conf.commitlog_sync_period_in_ms == null)
-            {
-                throw new ConfigurationException("Missing value for commitlog_sync_period_in_ms: Integer expected", false);
-            }
-            else if (conf.commitlog_sync_batch_window_in_ms != null)
-            {
-                throw new ConfigurationException("commitlog_sync_period_in_ms specified, but commitlog_sync_batch_window_in_ms found.  Only specify commitlog_sync_period_in_ms when using periodic sync.", false);
-            }
-            logger.debug("Syncing log with a period of {}", conf.commitlog_sync_period_in_ms);
-        }
+       	if (conf.commitlog_sync == Config.CommitLogSync.batch)
+       	{
+       		if (conf.commitlog_sync_batch_window_in_ms == null)
+       		{
+       			throw new ConfigurationException("Missing value for commitlog_sync_batch_window_in_ms: Double expected.", false);
+       		}
+       		else if (conf.commitlog_sync_period_in_ms != null)
+       		{
+       			throw new ConfigurationException("Batch sync specified, but commitlog_sync_period_in_ms found. Only specify commitlog_sync_batch_window_in_ms when using batch sync", false);
+       		}
+       		logger.debug("Syncing log with a batch window of {}", conf.commitlog_sync_batch_window_in_ms);
+       	}
+       	else
+       	{
+       		if (conf.commitlog_sync_period_in_ms == null)
+       		{
+       			throw new ConfigurationException("Missing value for commitlog_sync_period_in_ms: Integer expected", false);
+       		}
+       		else if (conf.commitlog_sync_batch_window_in_ms != null)
+       		{
+       			throw new ConfigurationException("commitlog_sync_period_in_ms specified, but commitlog_sync_batch_window_in_ms found.  Only specify commitlog_sync_period_in_ms when using periodic sync.", false);
+       		}
+       		logger.debug("Syncing log with a period of {}", conf.commitlog_sync_period_in_ms);
+       	}
+       } 
+       else if (conf.commitlog_type == Config.CommitLogType.CAPIFlashCommitLog) {
+       	if (conf.capiflashcommitlog_devices == null
+					|| conf.capiflashcommitlog_devices == null
+					|| conf.capiflashcommitlog_number_of_segments < 32
+					|| conf.capiflashcommitlog_segments_size_in_blocks < 16000
+					|| conf.capiflashcommitlog_start_offset < 0) {
+				throw new ConfigurationException(
+						"Please check all needed CAPI FlashCommitLog Parameters");
+			}
+			if (conf.capiflashcommitlog_segments_size_in_blocks * 4096 >= Integer.MAX_VALUE) {
+				throw new ConfigurationException(
+						"Number of blocks can not be bigger than INTEGER.MAX_VALUE");
+			}
+       }
+       else {
+			throw new ConfigurationException("Unidentified Value for Commitlog");
+		}
 
         /* evaluate the DiskAccessMode Config directive, which also affects indexAccessMode selection */
         if (conf.disk_access_mode == Config.DiskAccessMode.auto)
@@ -1343,7 +1365,69 @@ public class DatabaseDescriptor
     {
         return conf.data_file_directories;
     }
+    /*CAPIFlash Commitlog Getters Start*/
+	public static String[] getCAPIFlashCommitLogDevices() {
+		return conf.capiflashcommitlog_devices;
+	}
 
+	public static int getCAPIFlashCommitLogSegmentSizeInBlocks() {
+		return conf.capiflashcommitlog_segments_size_in_blocks;
+	}
+
+	public static int getCAPIFlashCommitLogNumberOfSegments() {
+		return conf.capiflashcommitlog_number_of_segments;
+	}
+
+	public static long getCAPIFlashCommitLogStartOffset() {
+		return conf.capiflashcommitlog_start_offset;
+	}
+	public static boolean isCommitlogDebugEnabled() {
+		return conf.capiflashcommitlog_debug_enabled;
+	}
+	
+	public static double getCAPIFlashCommitLogFlushThresHold() {
+		return conf.capiflashcommitlog_flush_threshold;
+	}
+
+	public static long getCAPIFlashCommitLogFlushCheckInterval() {
+		return conf.capiflashcommitlog_refresh_interval_in_seconds*1000;
+	}
+	
+	public static Config.CAPIFlashCommitlogChunkManagerType getCAPIFlashCommitLogChunkManager() {
+		return conf.capiflashcommitlog_chunkmanager_type;
+	}
+
+	public static Config.CAPIFlashCommitlogBufferAllocationStrategyType getCAPIFlashCommitLogBufferAllocationStrategy() {
+		return conf.capiflashcommitlog_buffer_allocator_type;
+	}
+
+	public static int getCAPIFlashCommitLogNumberOfChunks() {
+		return conf.capiflashcommitlog_number_of_chunks;
+	}
+	public static int getCAPIFlashCommitLogNumberOfAsyncCallsPerChunk() {
+		return conf.capiflashcommitlog_async_calls_per_chunk;
+	}
+
+	public static int getCAPIFlashCommitlogNumberOfBuffers() {
+		return conf.capiflashcommitlog_preallocated_buffer_count;
+	}
+
+	public static int getCAPIFlashCommitLogBufferSizeInBlocks() {
+		return conf.capiflashcommitlog_preallocated_buffer_size_in_blocks;
+	}
+
+	public static int getCAPIFlashCommitlogNumberOfAsyncWrite() {
+		return conf.capiflashcommitlog_number_of_concurrent_writeBlock;
+	}
+	
+	public static int getCAPIFlashCommitlogMaxNumberOfConsumers() {
+		return conf.capiflashcommitlog_number_of_concurrent_writeBlock;
+	}
+
+	public static Config.CommitLogType getCommitLogType() {
+		return conf.commitlog_type;
+	}
+	/*CAPIFlash Commitlog Getters End*/
     public static String getCommitLogLocation()
     {
         return conf.commitlog_directory;
