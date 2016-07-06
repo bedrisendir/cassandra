@@ -59,7 +59,8 @@ public class Memory implements AutoCloseable
     {
         String arch = System.getProperty("os.arch");
         unaligned = arch.equals("i386") || arch.equals("x86")
-                    || arch.equals("amd64") || arch.equals("x86_64") || arch.equals("s390x");
+                    || arch.equals("amd64") || arch.equals("x86_64") || arch.equals("s390x")
+                    || arch.equals("ppc") || arch.equals("ppc64") || arch.equals("ppc64le");
     }
 
     protected long peer;
