@@ -33,8 +33,8 @@ import javax.management.NotificationListener;
 import javax.management.ObjectName;
 import javax.management.openmbean.CompositeData;
 
-import com.sun.management.GarbageCollectionNotificationInfo;
-import com.sun.management.GcInfo;
+//import com.sun.management.GarbageCollectionNotificationInfo;
+//import com.sun.management.GcInfo;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,7 +117,7 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
             this.assumeGCIsPartiallyConcurrent = assumeGCIsPartiallyConcurrent;
             this.assumeGCIsOldGen = assumeGCIsOldGen;
         }
-
+/*
         String[] keys(GarbageCollectionNotificationInfo info)
         {
             if (keys != null)
@@ -128,6 +128,7 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
 
             return keys;
         }
+        */
     }
 
     final AtomicReference<State> state = new AtomicReference<>(new State());
@@ -225,6 +226,7 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
 
     public void handleNotification(final Notification notification, final Object handback)
     {
+    	/*
         String type = notification.getType();
         if (type.equals(GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION))
         {
@@ -235,12 +237,13 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
             GcInfo gcInfo = info.getGcInfo();
 
             long duration = gcInfo.getDuration();
-
+*/
             /*
              * The duration supplied in the notification info includes more than just
              * application stopped time for concurrent GCs. Try and do a better job coming up with a good stopped time
              * value by asking for and tracking cumulative time spent blocked in GC.
              */
+    	/*
             GCState gcState = gcStates.get(gcName);
             if (gcState.assumeGCIsPartiallyConcurrent)
             {
@@ -292,6 +295,7 @@ public class GCInspector implements NotificationListener, GCInspectorMXBean
             if (gcState.assumeGCIsOldGen)
                 LifecycleTransaction.rescheduleFailedDeletions();
         }
+        */
     }
 
     public State getTotalSinceLastCheck()
