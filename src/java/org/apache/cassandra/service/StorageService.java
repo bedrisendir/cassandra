@@ -58,7 +58,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.capi.CommitLogHelper;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.dht.*;
@@ -617,7 +617,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                     logger.warn("Caught exception while waiting for memtable flushes during shutdown hook", t);
                 }
 
-                CommitLog.instance.shutdownBlocking();
+                CommitLogHelper.instance.shutdownBlocking();
 
                 if (FBUtilities.isWindows())
                     WindowsTimer.endTimerPeriod(DatabaseDescriptor.getWindowsTimerInterval());
@@ -4246,11 +4246,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
         // whilst we've flushed all the CFs, which will have recycled all completed segments, we want to ensure
         // there are no segments to replay, so we force the recycling of any remaining (should be at most one)
-        CommitLog.instance.forceRecycleAllSegments();
+        CommitLogHelper.instance.forceRecycleAllSegments();
 
         ColumnFamilyStore.shutdownPostFlushExecutor();
 
-        CommitLog.instance.shutdownBlocking();
+        CommitLogHelper.instance.shutdownBlocking();
 
         // wait for miscellaneous tasks like sstable and commitlog segment deletion
         ScheduledExecutors.nonPeriodicTasks.shutdown();

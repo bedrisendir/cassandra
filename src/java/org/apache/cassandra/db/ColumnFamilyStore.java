@@ -43,8 +43,8 @@ import com.clearspring.analytics.stream.Counter;
 import org.apache.cassandra.cache.*;
 import org.apache.cassandra.concurrent.*;
 import org.apache.cassandra.config.*;
-import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.commitlog.capi.CommitLogHelper;
 import org.apache.cassandra.db.compaction.*;
 import org.apache.cassandra.db.filter.ClusteringIndexFilter;
 import org.apache.cassandra.db.filter.DataLimits;
@@ -1011,7 +1011,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             // If a flush errored out but the error was ignored, make sure we don't discard the commit log.
             if (flushFailure == null)
             {
-                CommitLog.instance.discardCompletedSegments(metadata.cfId, commitLogUpperBound);
+                CommitLogHelper.instance.discardCompletedSegments(metadata.cfId, commitLogUpperBound);
                 for (int i = 0 ; i < memtables.size() ; i++)
                 {
                     Memtable memtable = memtables.get(i);
@@ -1243,7 +1243,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         CommitLogPosition lastReplayPosition;
         while (true)
         {
-            lastReplayPosition = new Memtable.LastCommitLogPosition((CommitLog.instance.getCurrentPosition()));
+            lastReplayPosition = new Memtable.LastCommitLogPosition((CommitLogHelper.instance.getCurrentPosition()));
             CommitLogPosition currentLast = commitLogUpperBound.get();
             if ((currentLast == null || currentLast.compareTo(lastReplayPosition) <= 0)
                 && commitLogUpperBound.compareAndSet(currentLast, lastReplayPosition))
@@ -1258,7 +1258,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public void simulateFailedFlush()
     {
         discardFlushResults = this;
-        data.markFlushing(data.switchMemtable(false, new Memtable(new AtomicReference<>(CommitLog.instance.getCurrentPosition()), this)));
+        data.markFlushing(data.switchMemtable(false, new Memtable(new AtomicReference<>(CommitLogHelper.instance.getCurrentPosition()), this)));
     }
 
     public void resumeFlushing()

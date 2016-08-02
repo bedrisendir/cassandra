@@ -32,8 +32,8 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.commitlog.capi.CommitLogHelper;
 import org.apache.cassandra.db.filter.ClusteringIndexFilter;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
@@ -75,7 +75,7 @@ public class Memtable implements Comparable<Memtable>
 
     // The approximate lower bound by this memtable; must be <= commitLogLowerBound once our predecessor
     // has been finalised, and this is enforced in the ColumnFamilyStore.setCommitLogUpperBound
-    private final CommitLogPosition approximateCommitLogLowerBound = CommitLog.instance.getCurrentPosition();
+    private final CommitLogPosition approximateCommitLogLowerBound = CommitLogHelper.instance.getCurrentPosition();
 
     public int compareTo(Memtable that)
     {

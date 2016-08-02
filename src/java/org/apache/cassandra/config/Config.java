@@ -186,6 +186,40 @@ public class Config
 
     public String saved_caches_directory;
 
+    /*CAPIFLASHCommitlog Parameters Start*/
+    public CommitLogType commitlog_type;
+    public long capiflashcommitlog_start_offset;
+    public String[] capiflashcommitlog_devices;
+    public int capiflashcommitlog_number_of_segments;
+    public int capiflashcommitlog_segments_size_in_blocks;
+    public boolean capiflashcommitlog_debug_enabled = false;
+    public double capiflashcommitlog_flush_threshold = 0.2;
+    public int capiflashcommitlog_refresh_interval_in_seconds = 2;
+    
+    public CAPIFlashCommitlogChunkManagerType capiflashcommitlog_chunkmanager_type;
+    public CAPIFlashCommitlogBufferAllocationStrategyType capiflashcommitlog_buffer_allocator_type;
+    
+    //CAPIFlash CommitLog - Configurables for ChunkManager
+    public int capiflashcommitlog_number_of_chunks = 128;
+    public int capiflashcommitlog_async_calls_per_chunk = 0;
+
+    //CAPIFlash CommitLog - AsyncProducerConsumerChunk Manager 
+    public int capiflashcommitlog_number_of_concurrent_writeBlock = 128;
+    public int capiflashcommitlog_number_of_consumer_threads = 32;
+    
+    //CAPIFlash CommitLog - Configurables for Buffer Allocator
+    /**
+     * Fixed Size Allocation Strategy -  number of preallocated buffers/size of the buffers(in blocks)
+     * */
+    public int capiflashcommitlog_preallocated_buffer_size_in_blocks = 256;
+    public int capiflashcommitlog_preallocated_buffer_count = 128;
+
+    /**
+     * PooledAllocationStrategy -  number of preallocated buffers/size of the buffers(in blocks)
+     * */
+    //TODO
+    /*CAPIFLASHCommitlog Parameters End*/
+    
     // Commit Log
     public String commitlog_directory;
     public Integer commitlog_total_space_in_mb;
@@ -366,6 +400,27 @@ public class Config
         isClientMode = clientMode;
     }
 
+    /*CAPIFLASHCommitlog Types Start*/
+    public static enum CommitLogType
+    {
+        CommitLog,
+        CAPIFlashCommitLog
+    }
+    
+    public static enum CAPIFlashCommitlogChunkManagerType
+    {
+    	AsyncChunkManager,
+    	AsyncProducerConsumerChunkManager,
+    	AsyncSemaphoreChunkManager
+    }
+    
+    public static enum CAPIFlashCommitlogBufferAllocationStrategyType
+    {
+    	PooledAllocationStrategy,
+    	FixedSizeAllocationStrategy
+    }
+    /*CAPIFLASHCommitlog Types End*/
+    
     public enum CommitLogSync
     {
         periodic,

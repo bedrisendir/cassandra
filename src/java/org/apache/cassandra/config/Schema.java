@@ -33,7 +33,7 @@ import org.apache.cassandra.cql3.functions.*;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
-import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.capi.CommitLogHelper;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.marshal.UserType;
@@ -639,7 +639,7 @@ public class Schema
         Keyspace.writeOrder.awaitNewBarrier();
 
         // force a new segment in the CL
-        CommitLog.instance.forceRecycleAllSegments(droppedCfs);
+        CommitLogHelper.instance.forceRecycleAllSegments(droppedCfs);
 
         MigrationManager.instance.notifyDropKeyspace(ksm);
     }
@@ -694,7 +694,7 @@ public class Schema
         Keyspace.open(ksName).dropCf(cfm.cfId);
         MigrationManager.instance.notifyDropColumnFamily(cfm);
 
-        CommitLog.instance.forceRecycleAllSegments(Collections.singleton(cfm.cfId));
+        CommitLogHelper.instance.forceRecycleAllSegments(Collections.singleton(cfm.cfId));
     }
 
     public void addView(ViewDefinition view)
@@ -750,7 +750,7 @@ public class Schema
         Keyspace.open(ksName).viewManager.reload();
         MigrationManager.instance.notifyDropView(view);
 
-        CommitLog.instance.forceRecycleAllSegments(Collections.singleton(view.metadata.cfId));
+        CommitLogHelper.instance.forceRecycleAllSegments(Collections.singleton(view.metadata.cfId));
     }
 
     public void addType(UserType ut)
