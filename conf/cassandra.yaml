@@ -367,6 +367,71 @@ counter_cache_save_period: 7200
 # If not set, the default directory is $CASSANDRA_HOME/data/saved_caches.
 # saved_caches_directory: /var/lib/cassandra/saved_caches
 
+################################################################
+#CAPIFlash Commitlog Parameters
+
+#Type CommitLog or CAPIFlashCommitLog
+#commitlog_type: CAPIFlashCommitLog
+commitlog_type: CommitLog
+
+#CAPIFlashCommitLog
+capiflashcommitlog_devices:
+    - /dev/sg7
+    - /dev/sg9
+
+
+#Start offset on physical LUN
+capiflashcommitlog_start_offset: 0
+
+#number of logical segments
+capiflashcommitlog_number_of_segments: 256
+
+#records for each segment
+capiflashcommitlog_segments_size_in_blocks: 128000
+
+#if size of freelist goes below this value initiates flush
+capiflashcommitlog_flush_threshold: 0.3
+
+#refresh rate for the timer task checking freelist status
+capiflashcommitlog_refresh_interval_in_seconds: 2
+
+#Experimental
+#CapiFlashCommitlog - Buffer Allocation
+#capiflashcommitlog_buffer_allocator_type : PooledAllocationStrategy
+
+#Allocates fixed number of buffers with fixed size.
+#if number of buffers not enough it will busy wait until resource become available
+capiflashcommitlog_buffer_allocator_type : FixedSizeAllocationStrategy
+capiflashcommitlog_preallocated_buffer_size_in_blocks : 128
+capiflashcommitlog_preallocated_buffer_count : 700
+
+#CapiFlashCommitlog - Async Chunk Management#
+#number of chunks to be opened
+capiflashcommitlog_number_of_chunks : 24
+
+#number of async call parameters to be passed to the openChunk method
+#if set 0 capiflash layer decides on the parameter
+capiflashcommitlog_async_calls_per_chunk : 128
+
+##Experimental
+
+#no configurables for this type of chunk manager- each concurrent_writes thread calls writeblockasync and Future.get immediately.
+#capiflashcommitlog_chunkmanager_type : AsyncChunkManager
+
+#creates number of chunks defined by (capiflashcommitlog_number_of_chunks)
+#implements controls over concurrent_writer threads
+#capiflashcommitlog_chunkmanager_type : AsyncProducerConsumerChunkManager
+#max number of consumer threads to consume Future.get() of writeblockAsync calls.
+capiflashcommitlog_number_of_consumer_threads : 32
+
+#capiflashcommitlog_chunkmanager_type : AsyncSemaphoreChunkManager
+capiflashcommitlog_chunkmanager_type : AsyncChunkManager
+
+#number of concurrent_writes threads allowed to call writeBlockAsync
+#also sets the size of the blockingqueue which backs the threadpool that consumes Future.get
+capiflashcommitlog_number_of_concurrent_writeBlock : 128
+
+
 # commitlog_sync may be either "periodic" or "batch." 
 # 
 # When in batch mode, Cassandra won't ack writes until the commit log
