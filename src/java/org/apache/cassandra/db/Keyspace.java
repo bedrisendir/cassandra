@@ -34,6 +34,7 @@ import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.commitlog.capi.CommitLogHelper;
+import org.apache.cassandra.db.commitlog.capi.CommitlogOutofSpaceException;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
@@ -496,6 +497,10 @@ public class Keyspace
             {
                 Tracing.trace("Appending to commitlog");
                 commitLogPosition = CommitLogHelper.instance.add(mutation);
+                if (commitLogPosition == null) {
+                	throw new CommitlogOutofSpaceException("Retry");
+                }
+                
             }
 
             for (PartitionUpdate upd : mutation.getPartitionUpdates())
@@ -534,7 +539,11 @@ public class Keyspace
             }
             mark.complete(null);
             return mark;
-        }
+        } catch (CommitlogOutofSpaceException e) {
+        	logger.error("out of space exception thrown!!!");
+        	CommitLogHelper.instance.await();
+        	apply(mutation, writeCommitLog, updateIndexes);
+		}
         finally
         {
             if (locks != null)

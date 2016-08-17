@@ -109,10 +109,8 @@ public class CAPIFlashCommitLog implements ICommitLog {
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
-		//test3.getAndAdd(adder.getRequiredBlocks());
 		chunkManager.write(adder.getStartBlock(), adder.getRequiredBlocks(), buf);
 		bufferAlloc.free(buf);
-		//test1.decrementAndGet();
 		return new CommitLogPosition(adder.getSegmentID(), adder.getOffset());
 	}
 
@@ -169,6 +167,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 	 * Recover
 	 */
 	public int recover() {
+		//TODO Implement
 		/*
 		long startTime = System.currentTimeMillis();
 		FlashBulkReplayer r = new FlashBulkReplayer();

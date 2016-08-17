@@ -29,6 +29,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -98,7 +99,18 @@ public class FlashSegment {
      * mark all of the column families we're modifying as dirty at this position
      */
 	public void markDirty(Mutation rm, CommitLogPosition repPos) {
-		//TODO
+		for (PartitionUpdate columnFamily : rm.getPartitionUpdates()) {
+			// check for null cfm in case a cl write goes through after the cf
+			// is
+			// defined but before a new segment is created.
+			CFMetaData cfm = Schema.instance.getCFMetaData(columnFamily.metadata().cfId);
+			if (cfm == null) {
+				logger.debug("Attempted to write commit log entry for unrecognized column family: "
+						+ columnFamily.metadata().cfId);
+			} else {
+				markCFDirty(columnFamily.metadata().cfId, repPos.position);
+			}
+		}
 	}
 
 	private void markCFDirty(UUID cfId, int position) {
