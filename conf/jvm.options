@@ -101,7 +101,7 @@
 -XX:+HeapDumpOnOutOfMemoryError
 
 # Per-thread stack size.
--Xss256k
+-Xss512k
 
 # Larger interned string table, for gossip's benefit (CASSANDRA-6410)
 -XX:StringTableSize=1000003
@@ -160,8 +160,8 @@
 # the same value to avoid stop-the-world GC pauses during resize, and
 # so that we can lock the heap in memory on startup to prevent any
 # of it from being swapped out.
-#-Xms4G
-#-Xmx4G
+-Xms18G
+-Xmx18G
 
 # Young generation size is automatically calculated by cassandra-env
 # based on this formula: min(100 * num_cores, 1/4 * heap size)
@@ -177,7 +177,7 @@
 # The example below assumes a modern 8-core+ machine for decent
 # times. If in doubt, and if you do not particularly want to tweak, go
 # 100 MB per physical CPU core.
-#-Xmn800M
+-Xmn8G
 
 #################
 #  GC SETTINGS  #
@@ -221,10 +221,10 @@
 # For systems with > 8 cores, the default ParallelGCThreads is 5/8 the number of logical cores.
 # Otherwise equal to the number of cores when 8 or less.
 # Machines with > 10 cores should try setting these to <= full cores.
-#-XX:ParallelGCThreads=16
+-XX:ParallelGCThreads=24
 # By default, ConcGCThreads is 1/4 of ParallelGCThreads.
 # Setting both to the same value can reduce STW durations.
-#-XX:ConcGCThreads=16
+-XX:ConcGCThreads=24
 
 ### GC logging options -- uncomment to enable
 
@@ -235,7 +235,7 @@
 -XX:+PrintGCApplicationStoppedTime
 -XX:+PrintPromotionFailure
 #-XX:PrintFLSStatistics=1
-#-Xloggc:/var/log/cassandra/gc.log
+-Xloggc:/dev/shm/bsendir/gc.log
 -XX:+UseGCLogFileRotation
 -XX:NumberOfGCLogFiles=10
 -XX:GCLogFileSize=10M
