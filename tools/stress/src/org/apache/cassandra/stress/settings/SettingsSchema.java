@@ -37,7 +37,7 @@ public class SettingsSchema implements Serializable
 
     private final String replicationStrategy;
     private final Map<String, String> replicationStrategyOptions;
-
+    private final String durability;
     private final String compression;
     private final String compactionStrategy;
     private final Map<String, String> compactionStrategyOptions;
@@ -55,6 +55,7 @@ public class SettingsSchema implements Serializable
         compression = options.compression.value();
         compactionStrategy = options.compaction.getStrategy();
         compactionStrategyOptions = options.compaction.getOptions();
+        durability = options.durability.value();
     }
 
     public void createKeySpaces(StressSettings settings)
@@ -126,7 +127,7 @@ public class SettingsSchema implements Serializable
             b.append("}");
         }
 
-        b.append(" AND durable_writes = true;\n");
+        b.append(" AND durable_writes = "+durability+";\n");
 
         return b.toString();
     }
@@ -290,11 +291,12 @@ public class SettingsSchema implements Serializable
         final OptionCompaction compaction = new OptionCompaction();
         final OptionSimple keyspace = new OptionSimple("keyspace=", ".*", "keyspace1", "The keyspace name to use", false);
         final OptionSimple compression = new OptionSimple("compression=", ".*", null, "Specify the compression to use for sstable, default:no compression", false);
+        final OptionSimple durability = new OptionSimple("commitlog=", ".*", "false", "Specify the durability for keyspace, default:false", false);
 
         @Override
         public List<? extends Option> options()
         {
-            return Arrays.asList(replication, keyspace, compaction, compression);
+        	  return Arrays.asList(replication, keyspace, compaction, compression,durability);
         }
     }
 
