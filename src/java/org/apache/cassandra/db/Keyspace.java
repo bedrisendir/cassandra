@@ -542,7 +542,7 @@ public class Keyspace
         } catch (CommitlogOutofSpaceException e) {
         	logger.error("out of space exception thrown!!!");
         	CommitLogHelper.instance.await();
-        	apply(mutation, writeCommitLog, updateIndexes);
+        	return apply(mutation, writeCommitLog, updateIndexes);
 		}
         finally
         {

@@ -207,6 +207,7 @@ public class DebuggableThreadPoolExecutor extends ThreadPoolExecutor implements 
     @Override
     protected void beforeExecute(Thread t, Runnable r)
     {
+    	Scheduler.instance.pinMe("others");
         if (r instanceof LocalSessionWrapper)
             ((LocalSessionWrapper) r).setupContext();
 

@@ -66,7 +66,7 @@ final class SEPWorker extends AtomicReference<SEPWorker.Work> implements Runnabl
          *      with invariant (1) ensures that if any thread was spinning when a task was added to any executor, that
          *      task will be processed immediately if work permits are available
          */
-
+    	Scheduler.instance.pinMe("shared");
         SEPExecutor assigned = null;
         Runnable task = null;
         try

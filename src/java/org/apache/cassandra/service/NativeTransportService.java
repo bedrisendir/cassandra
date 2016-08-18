@@ -32,6 +32,8 @@ import io.netty.channel.epoll.Epoll;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.util.concurrent.EventExecutor;
+
+import org.apache.cassandra.concurrent.CoreThreadFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.metrics.AuthMetrics;
 import org.apache.cassandra.metrics.ClientMetrics;
@@ -49,7 +51,7 @@ public class NativeTransportService
     private Collection<Server> servers = Collections.emptyList();
 
     private boolean initialized = false;
-    private EventLoopGroup workerGroup;
+    private NioEventLoopGroup workerGroup;
     private EventExecutor eventExecutorGroup;
 
     /**
@@ -64,16 +66,17 @@ public class NativeTransportService
         // prepare netty resources
         eventExecutorGroup = new RequestThreadPoolExecutor();
 
-        if (useEpoll())
-        {
-            workerGroup = new EpollEventLoopGroup();
-            logger.info("Netty using native Epoll event loop");
-        }
-        else
-        {
-            workerGroup = new NioEventLoopGroup();
-            logger.info("Netty using Java NIO event loop");
-        }
+        //if (useEpoll())
+       // {
+       //     workerGroup = new EpollEventLoopGroup();
+        //    logger.info("Netty using native Epoll event loop");
+       // }
+       // else
+       // {
+        workerGroup = new NioEventLoopGroup(DatabaseDescriptor.getConcurrentWriters(),new CoreThreadFactory(0));
+        //workerGroup.setIoRatio(99);
+        //    logger.info("Netty using Java NIO event loop");
+       // }
 
         int nativePort = DatabaseDescriptor.getNativeTransportPort();
         int nativePortSSL = DatabaseDescriptor.getNativeTransportPortSSL();
@@ -158,8 +161,9 @@ public class NativeTransportService
      */
     public static boolean useEpoll()
     {
-        final boolean enableEpoll = Boolean.valueOf(System.getProperty("cassandra.native.epoll.enabled", "true"));
-        return enableEpoll && Epoll.isAvailable();
+        //final boolean enableEpoll = Boolean.valueOf(System.getProperty("cassandra.native.epoll.enabled", "true"));
+        //return enableEpoll && Epoll.isAvailable();
+        return false;
     }
 
     /**

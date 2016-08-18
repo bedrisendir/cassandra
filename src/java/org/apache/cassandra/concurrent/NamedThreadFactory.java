@@ -56,6 +56,7 @@ public class NamedThreadFactory implements ThreadFactory
 
     public Thread newThread(Runnable runnable)
     {
+    	//Scheduler.instance.pinMe("others");
         String name = id + ":" + n.getAndIncrement();
         Thread thread = new FastThreadLocalThread(threadGroup, runnable, name);
         thread.setPriority(priority);

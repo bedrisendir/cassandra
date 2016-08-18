@@ -46,6 +46,8 @@ import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.netty.util.internal.logging.Slf4JLoggerFactory;
+
+import org.apache.cassandra.concurrent.CoreThreadFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.EncryptionOptions;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -83,7 +85,7 @@ public class Server implements CassandraDaemon.Server
     public boolean useSSL = false;
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
-    private EventLoopGroup workerGroup;
+    private NioEventLoopGroup workerGroup;
     private EventExecutor eventExecutorGroup;
 
     private Server (Builder builder)
@@ -96,10 +98,11 @@ public class Server implements CassandraDaemon.Server
         }
         else
         {
-            if (useEpoll)
-                workerGroup = new EpollEventLoopGroup();
-            else
-                workerGroup = new NioEventLoopGroup();
+           // if (useEpoll)
+           //     workerGroup = new EpollEventLoopGroup();
+           // else
+           workerGroup = new NioEventLoopGroup(DatabaseDescriptor.getConcurrentCounterWriters(),new CoreThreadFactory(0));
+           // workerGroup.setIoRatio(99);       
         }
         if (builder.eventExecutorGroup != null)
             eventExecutorGroup = builder.eventExecutorGroup;
@@ -182,7 +185,7 @@ public class Server implements CassandraDaemon.Server
 
     public static class Builder
     {
-        private EventLoopGroup workerGroup;
+        private NioEventLoopGroup workerGroup;
         private EventExecutor eventExecutorGroup;
         private boolean useSSL = false;
         private InetAddress hostAddr;
@@ -195,7 +198,7 @@ public class Server implements CassandraDaemon.Server
             return this;
         }
 
-        public Builder withEventLoopGroup(EventLoopGroup eventLoopGroup)
+        public Builder withEventLoopGroup(NioEventLoopGroup eventLoopGroup)
         {
             this.workerGroup = eventLoopGroup;
             return this;
