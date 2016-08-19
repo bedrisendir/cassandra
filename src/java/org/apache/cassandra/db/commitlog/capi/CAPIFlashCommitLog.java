@@ -168,7 +168,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 	 */
 	public int recover() {
 		//TODO Implement
-		/*
+		
 		long startTime = System.currentTimeMillis();
 		FlashBulkReplayer r = new FlashBulkReplayer();
 		try {
@@ -179,10 +179,8 @@ public class CAPIFlashCommitLog implements ICommitLog {
 		long count = r.blockForWrites();
 		fsm.recycleAfterReplay();
 		long estimatedTime = System.currentTimeMillis() - startTime;
-		logger.debug("------------------------>" + " Replayed " + count + " records in " + estimatedTime);
-		return (int) count;*/
-		return 0;
-		
+		logger.error("------------------------>" + " Replayed " + count + " records in " + estimatedTime);
+		return (int) count;
 	}
 
 	/**
