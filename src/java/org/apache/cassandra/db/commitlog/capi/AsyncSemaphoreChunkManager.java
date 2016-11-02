@@ -10,7 +10,7 @@ import com.ibm.research.capiblock.Chunk;
 
 public class AsyncSemaphoreChunkManager extends ChunkManager {
 	static final Logger logger = LoggerFactory.getLogger(AsyncSemaphoreChunkManager.class);
-	private final Semaphore semaphore = new Semaphore(DatabaseDescriptor.getCAPIFlashCommitlogNumberOfAsyncWrite(), true);
+	private final Semaphore semaphore = new Semaphore(DatabaseDescriptor.getCAPIFlashCommitlogNumberOfAsyncWrite(), false);
 
 	public AsyncSemaphoreChunkManager(int num_async) {
 		logger.error("[AsyncSemaphoreChunkManager - Devices =  " + DEVICES.length + "," + num_async + "]");

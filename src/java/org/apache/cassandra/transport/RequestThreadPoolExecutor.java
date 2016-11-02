@@ -30,7 +30,7 @@ import static org.apache.cassandra.concurrent.SharedExecutorPool.SHARED;
 
 public class RequestThreadPoolExecutor extends AbstractEventExecutor
 {
-    private final static int MAX_QUEUED_REQUESTS = 128;
+    private final static int MAX_QUEUED_REQUESTS = 512;
     private final static String THREAD_FACTORY_ID = "Native-Transport-Requests";
     private final LocalAwareExecutorService wrapped = SHARED.newExecutor(DatabaseDescriptor.getNativeTransportMaxThreads(),
                                                                            MAX_QUEUED_REQUESTS,
