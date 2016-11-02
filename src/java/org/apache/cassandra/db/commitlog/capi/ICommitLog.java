@@ -16,7 +16,7 @@ public interface ICommitLog {
 
 	void shutdownBlocking() throws InterruptedException;
 
-	void discardCompletedSegments(UUID cfId, CommitLogPosition x);
+	void discardCompletedSegments(UUID cfId, CommitLogPosition commitLogLowerBound, CommitLogPosition commitLogUpperBound);
 
 	void forceRecycleAllSegments(Iterable<UUID> droppedCfs);
 

@@ -20,8 +20,11 @@ package org.apache.cassandra.db.commitlog.capi;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -29,7 +32,9 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.commitlog.IntegerInterval;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,8 +44,12 @@ import org.slf4j.LoggerFactory;
  */
 public class FlashSegment {
 	static final Logger logger = LoggerFactory.getLogger(FlashSegment.class);
-	// cache
-	public final Map<UUID, Integer> cfLastWrite = new HashMap<>();
+	
+	 // a map of Cf->dirty interval in this segment; if interval is not covered by the clean set, the log contains unflushed data
+    private final NonBlockingHashMap<UUID, IntegerInterval> cfDirty = new NonBlockingHashMap<>(1024);
+
+    // a map of Cf->clean intervals; separate map from above to permit marking Cfs clean whilst the log is still in use
+    private final ConcurrentHashMap<UUID, IntegerInterval.Set> cfClean = new ConcurrentHashMap<>();
 
 	// create a unique id per segment
 	private final static long idBase = System.currentTimeMillis();
@@ -59,10 +68,6 @@ public class FlashSegment {
 	public FlashSegment(int pb_id) {
 		id = getNextId();
 		physical_block_address = pb_id;
-	}
-
-	public synchronized boolean isActive() {
-		return !cfLastWrite.isEmpty();
 	}
 
 	public boolean hasCapacityFor(long blocks) {
@@ -95,38 +100,33 @@ public class FlashSegment {
 				+ start;
 	}
 
-	 /**
-     * mark all of the column families we're modifying as dirty at this position
-     */
-	public void markDirty(Mutation rm, CommitLogPosition repPos) {
-		for (PartitionUpdate columnFamily : rm.getPartitionUpdates()) {
-			// check for null cfm in case a cl write goes through after the cf
-			// is
-			// defined but before a new segment is created.
-			CFMetaData cfm = Schema.instance.getCFMetaData(columnFamily.metadata().cfId);
-			if (cfm == null) {
-				logger.debug("Attempted to write commit log entry for unrecognized column family: "
-						+ columnFamily.metadata().cfId);
-			} else {
-				markCFDirty(columnFamily.metadata().cfId, repPos.position);
-			}
-		}
+	public void markDirty(Mutation mutation, int allocatedPosition) {
+		for (PartitionUpdate update : mutation.getPartitionUpdates())
+            coverInMap(cfDirty, update.metadata().cfId, allocatedPosition);
 	}
+	
 
-	private void markCFDirty(UUID cfId, int position) {
-		cfLastWrite.put(cfId, position);
-	}
-
-	public synchronized Collection<UUID> getDirtyCFIDs() {
-		return new ArrayList<>(cfLastWrite.keySet());
-	}
-
-	public synchronized void markClean(UUID cfId, CommitLogPosition context) {
-		Integer lastWritten = cfLastWrite.get(cfId);
-		if (lastWritten != null
-				&& (!contains(context) || lastWritten < context.position)) {
-			cfLastWrite.remove(cfId);
-		}
+	public synchronized void markClean(UUID cfId, CommitLogPosition startPosition, CommitLogPosition endPosition) {
+        if (startPosition.segmentId > id || endPosition.segmentId < id)
+            return;
+        if (!cfDirty.containsKey(cfId))
+            return;
+        int start = startPosition.segmentId == id ? startPosition.position : 0;
+        int end = endPosition.segmentId == id ? endPosition.position : Integer.MAX_VALUE;
+        cfClean.computeIfAbsent(cfId, k -> new IntegerInterval.Set()).add(start, end);
+        Iterator<Map.Entry<UUID, IntegerInterval.Set>> iter = cfClean.entrySet().iterator();
+        while (iter.hasNext())
+        {
+            Map.Entry<UUID, IntegerInterval.Set> clean = iter.next();
+            UUID cfId = clean.getKey();
+            IntegerInterval.Set cleanSet = clean.getValue();
+            IntegerInterval dirtyInterval = cfDirty.get(cfId);
+            if (dirtyInterval != null && cleanSet.covers(dirtyInterval))
+            {
+                cfDirty.remove(cfId);
+                iter.remove();
+            }
+        }
 	}
 
 	public synchronized boolean isUnused() {
@@ -136,6 +136,28 @@ public class FlashSegment {
 	public boolean contains(CommitLogPosition context) {
 		return context.segmentId == id;
 	}
+	
+    /**
+     * @return a collection of dirty CFIDs for this segment file.
+     */
+    public synchronized Collection<UUID> getDirtyCFIDs()
+    {
+        if (cfClean.isEmpty() || cfDirty.isEmpty())
+            return cfDirty.keySet();
+
+        List<UUID> r = new ArrayList<>(cfDirty.size());
+        for (Map.Entry<UUID, IntegerInterval> dirty : cfDirty.entrySet())
+        {
+            UUID cfId = dirty.getKey();
+            IntegerInterval dirtyInterval = dirty.getValue();
+            IntegerInterval.Set cleanSet = cfClean.get(cfId);
+            if (cleanSet == null || !cleanSet.covers(dirtyInterval))
+                r.add(dirty.getKey());
+        }
+        return r;
+    }
+	
+	
 	
 	/**
 	 * Used only for debugging

@@ -156,7 +156,7 @@ public class FlashSegmentManager {
 			logger.error("activation"+num_blocks);
 			activateNextSegment();
 		}
-		active.markDirty(rm, active.getContext());
+		active.markDirty(rm, (int) active.currentBlocks.get());
 		final FlashRecordAdder offset = new FlashRecordAdder(num_blocks, active.getandAddPosition(num_blocks),
 				active.getID(), (int) active.currentBlocks.get());
 		allocationLock.unlock();

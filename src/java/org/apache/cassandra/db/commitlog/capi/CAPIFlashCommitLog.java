@@ -125,7 +125,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 	 * @param context
 	 *            the replay position of the flush
 	 */
-	public void discardCompletedSegments(UUID cfId, final CommitLogPosition context) {
+	public void discardCompletedSegments(UUID cfId, final CommitLogPosition lowerBound, CommitLogPosition upperBound) {
 		// Go thru the active segment files, which are ordered oldest to
 		// newest, marking the
 		// flushed CF as clean, until we reach the segment file
@@ -133,10 +133,10 @@ public class CAPIFlashCommitLog implements ICommitLog {
 		// in the arguments. Any segments that become unused after they
 		// are marked clean will be
 		// recycled or discarded
-		logger.error("discard completed log segments for {}, column family {}", context, cfId);
+		 logger.error("discard completed log segments for {}-{}, table {}", lowerBound, upperBound, cfId);
 		for (Iterator<FlashSegment> iter = fsm.getActiveSegments().iterator(); iter.hasNext();) {
 			FlashSegment segment = iter.next();
-			segment.markClean(cfId, context);
+			segment.markClean(cfId, lowerBound, upperBound);
 			// If the segment is no longer needed, and we have another
 			// spare segment in the hopper
 			// (to keep the last segment from getting discarded), pursue
@@ -153,7 +153,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 			} else {
 				logger.error("Not deleting active commitlog segment {} ", segment.physical_block_address);
 			}
-			if (segment.contains(context)) {
+		     if (segment.contains(upperBound)){
 				logger.error("Segment " + segment.id + " contains the context");
 				break;
 			}
