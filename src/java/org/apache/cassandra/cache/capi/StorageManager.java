@@ -55,7 +55,7 @@ public class StorageManager {
     public StorageManager() {
     }
 
-    void add(CapiChunkDriver driver, long startLba, long lbaSize) {
+    public void add(CapiChunkDriver driver, long startLba, long lbaSize) {
         assert(driver != null);
         assert(startLba >= 0);
         assert(lbaSize > 0);

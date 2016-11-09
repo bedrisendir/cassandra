@@ -22,10 +22,12 @@ import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.cassandra.cache.SerializingCacheProvider.RowCacheSerializer;
 import org.apache.cassandra.cache.capi.CapiCache;
-import org.apache.cassandra.db.TypeSizes;
+import org.apache.cassandra.cache.capi.CapiCache.CacheHandler;
+import org.apache.cassandra.cache.capi.CapiChunkDriver;
 import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
@@ -56,6 +58,14 @@ public class CapiBlockRowCache implements ICache<RowCacheKey, IRowCacheEntry>, E
     private final ConcurrentLinkedHashMap<RowCacheKey, IRowCacheEntry> map;
     private final CapiCache<RowCacheKey, IRowCacheEntry> capiCache;
     final HashFunction hashFunc;
+    
+    public static AtomicLong touched = new AtomicLong();
+    public static AtomicLong cacheHit = new AtomicLong();
+    public static AtomicLong cacheMiss = new AtomicLong();
+    public static AtomicLong swapin = new AtomicLong();
+    public static AtomicLong swapinMiss = new AtomicLong();
+    public static AtomicLong swapinErr = new AtomicLong();
+    public static AtomicLong remove = new AtomicLong();
 
     CapiCache.Serializer<RowCacheKey, IRowCacheEntry> cacheSerializer = new CapiCache.Serializer<RowCacheKey, IRowCacheEntry>()
     {
@@ -319,27 +329,142 @@ public class CapiBlockRowCache implements ICache<RowCacheKey, IRowCacheEntry>, E
 
     public IRowCacheEntry get(RowCacheKey key)
     {
-        return map.get(key);
+        IRowCacheEntry entry = map.get(key);
+        if (entry == null)
+        {
+            try
+            {
+                // logger.info("> CAPI-getSync");
+                // try
+                // {
+                // throw new Exception();
+                // }
+                // catch (Exception ex)
+                // {
+                // logger.error("get: ", ex);
+                // ex.printStackTrace();
+                // }
+
+                entry = capiCache.getSync(key);
+                if (entry != null)
+                    swapin.incrementAndGet();
+                else
+                    swapinMiss.incrementAndGet();
+                // logger.info("< CAPI-getSync");
+            }
+            catch (IOException ex)
+            {
+                if (swapinErr.incrementAndGet() % logUnit == 0)
+                    log();
+            }
+        }
+
+        if (entry == null)
+        {
+            if (cacheMiss.incrementAndGet() % logUnit == 0)
+                log();
+        }
+        else
+        {
+            if (cacheHit.incrementAndGet() % logUnit == 0)
+                log();
+        }
+        return entry;
     }
 
     public void put(RowCacheKey key, IRowCacheEntry value)
     {
         map.put(key, value);
+
+        // logger.info("> CAPI-put (put)");
+        capiCache.put(key, value);
     }
 
     public boolean putIfAbsent(RowCacheKey key, IRowCacheEntry value)
     {
-        return map.putIfAbsent(key, value) == null;
+        if (!(value instanceof RowCacheSentinel))
+            throw new UnsupportedOperationException();
+
+        // logger.info("putIfAbsent: " + value);
+        boolean ret = map.putIfAbsent(key, value) == null;
+        return ret;    
     }
 
-    public boolean replace(RowCacheKey key, IRowCacheEntry old, IRowCacheEntry value)
+    public boolean replace(RowCacheKey k, IRowCacheEntry oldToReplace, IRowCacheEntry v)
     {
-        return map.replace(key, old, value);
-    }
+        // logger.info("#####CapiRowCache replace");
 
-    public void remove(RowCacheKey key)
+        if (!(oldToReplace instanceof RowCacheSentinel))
+            throw new UnsupportedOperationException();
+
+        // if there is no old value in our map, we fail
+        IRowCacheEntry old = map.get(k);
+        if (old == null)
+        {
+            // logger.info("> CAPI-put (replace1)");
+            capiCache.remove(k);
+            return false;
+        }
+
+        synchronized (old)
+        {
+            if (!old.equals(oldToReplace))
+                return false;
+
+            if (map.replace(k, old, v))
+            {
+                // logger.info("> CAPI-put (replace2)");
+                capiCache.put(k, v);
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+     }
+
+    public void remove(RowCacheKey k)
     {
-        map.remove(key);
+        // logger.info("#####CapiRowCache remove");
+        // try
+        // {
+        // throw new Exception();
+        // }
+        // catch (Exception ex)
+        // {
+        // logger.error("remove: ", ex);
+        // ex.printStackTrace();
+        // }
+
+        // logger.info("> CAPI-put (remove)");
+        capiCache.remove(k, new CacheHandler<RowCacheKey, IRowCacheEntry>()
+        {
+
+            @Override
+            public void hit(RowCacheKey k, IRowCacheEntry v)
+            {
+                throw new IllegalStateException();
+            }
+
+            @Override
+            public void miss(RowCacheKey k)
+            {
+            }
+
+            @Override
+            public void error(RowCacheKey k, String msg)
+            {
+                logger.error("capi cache remove error: " + msg);
+            }
+
+            @Override
+            public void updated(RowCacheKey k)
+            {
+                if (remove.incrementAndGet() % logUnit == 0)
+                    log();
+            }
+        });    	
     }
 
     public Iterator<RowCacheKey> keyIterator()
@@ -361,5 +486,31 @@ public class CapiBlockRowCache implements ICache<RowCacheKey, IRowCacheEntry>, E
     {
         if (v instanceof RowCacheSentinel)
             return;
+    }
+    
+    long logUnit = 100000L;
+    long lastLog = System.currentTimeMillis();
+    long lastCapiRead = 0L;
+    long lastCapiRowRead = 0L;
+
+    private void log()
+    {
+        long now = System.currentTimeMillis();
+        long elapsed = now - lastLog;
+        lastLog = now;
+
+        long currentCapiRead = swapin.incrementAndGet() + swapinMiss.incrementAndGet();
+        long count = currentCapiRead - lastCapiRead;
+        lastCapiRead = currentCapiRead;
+
+        long currentCapiRowRead = CapiChunkDriver.executed.get();
+        long rowCount = currentCapiRowRead - lastCapiRowRead;
+        lastCapiRowRead = currentCapiRowRead;
+
+        logger.info("cache hit/miss : " + cacheHit + "/" + cacheMiss
+                + ", "//
+                + "total swapped-in (success/miss/error/remove) : " + swapin + "/" + swapinMiss + "/" + swapinErr + "/"
+                + remove + ", throughput (cache/capi): " + (count / (double) elapsed) * 1000.0 + "/"
+                + (rowCount / (double) elapsed) * 1000.0);
     }
 }

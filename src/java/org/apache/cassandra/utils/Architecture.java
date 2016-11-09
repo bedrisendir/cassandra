@@ -33,6 +33,8 @@ public final class Architecture
         "x86",
         "amd64",
         "x86_64",
+        "ppc64",
+        "ppc64le",
         "s390x"
     ));
 
