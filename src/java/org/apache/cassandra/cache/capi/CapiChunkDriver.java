@@ -285,7 +285,7 @@ public class CapiChunkDriver {
             Future<Long> future = chunk.readBlockAsync(lba, numOfBlocks, bb);
             long rc = 0L;
             try {
-                while ((rc = future.get(10L, TimeUnit.SECONDS)) == 0L)
+                while ((rc = future.get(10000L, TimeUnit.SECONDS)) == 0L)
                     ;
             } catch (Exception ex) {
                 logger.error("capi read error: deviceName=" + chunk2Device.get(chunk) + ", lba=" + lba);
@@ -311,7 +311,7 @@ public class CapiChunkDriver {
             Future<Long> future = chunk.writeBlockAsync(lba, numOfBlocks, bb);
             long rc = 0L;
             try {
-                while ((rc = future.get(10L, TimeUnit.SECONDS)) == 0L)
+                while ((rc = future.get(10000L, TimeUnit.SECONDS)) == 0L)
                     ;
             } catch (Exception ex) {
                 logger.error("capi read error: deviceName=" + chunk2Device.get(chunk) + ", lba=" + lba);
@@ -409,7 +409,7 @@ public class CapiChunkDriver {
                         throw new IllegalStateException();
 
                     long start = System.currentTimeMillis();
-                    while ((rc = future.get(10L, TimeUnit.SECONDS)) == 0L)
+                    while ((rc = future.get(10000L, TimeUnit.SECONDS)) == 0L)
                         ;
                     long elapsed = System.currentTimeMillis() - start;
 

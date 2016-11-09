@@ -36,6 +36,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
     public static AtomicLong touched = new AtomicLong();
     public static AtomicLong cacheHit = new AtomicLong();
     public static AtomicLong cacheMiss = new AtomicLong();
+    public static AtomicLong cachePush = new AtomicLong();
     public static AtomicLong swapin = new AtomicLong();
     public static AtomicLong swapinMiss = new AtomicLong();
     public static AtomicLong swapinErr = new AtomicLong();
@@ -168,7 +169,6 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                 writeString(bb, key.ksAndCFName.left);
                 writeString(bb, key.ksAndCFName.right);
                 bb.put(key.key);
-                bb.rewind();
             } catch (BufferOverflowException ex) {
                 logger.error("ideal: " + (getByteSizeForString(key.ksAndCFName.left) + getByteSizeForString(key.ksAndCFName.right) + key.key.length) + ", actual=" + bb.capacity());
                 throw ex;
@@ -206,7 +206,6 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             String cfName = readString(bb);
             ByteBuffer keyBody = ByteBuffer.allocateDirect(bb.remaining());
             keyBody.put(bb);
-            keyBody.rewind();
             return new RowCacheKey(Pair.create(ksName, cfName), keyBody);
         }
 
@@ -327,6 +326,9 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             try {
                 putToCapi(key, hash, value, false);
                 map.put(key, value);
+                filled(hash, false);
+                cachePush.incrementAndGet();
+
             } finally {
                 unlock(hash);
             }
@@ -350,7 +352,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                 lock(hash);
 
             try {
-                sm.writeAsync(getLBA(hash), bb, new CapiChunkDriver.AsyncHandler() {
+                sm.writeAsync(getLBA(hash) * CapiBlockDevice.BLOCK_SIZE, bb, new CapiChunkDriver.AsyncHandler() {
 
                     @Override
                     public void success(ByteBuffer bb) {
@@ -385,8 +387,6 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                     throw new IllegalStateException((String) ret);
                 }
 
-                filled(hash, false);
-
             } catch (IOException ex) {
                 logger.error(ex.getMessage(), ex);
                 return;
@@ -407,6 +407,9 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
                 map.put(key, value);
                 putToCapi(key, hash, value, false);
+                filled(hash, false);
+
+                cachePush.incrementAndGet();
 
                 return true;
             } finally {
@@ -424,7 +427,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
                 IRowCacheEntry current = map.get(key);
                 if (current == null) {
-                    current = getFromCapi(key);
+                    current = getFromCapi(key, hash);
                     if (current == null) {
                         logger.error("filter is not consistent.");
                         return false;
@@ -433,6 +436,9 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
                 map.put(key, value);
                 putToCapi(key, hash, value, false);
+                //filled(hash, false);
+
+                cachePush.incrementAndGet();
 
                 return true;
             } finally {
@@ -440,14 +446,11 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             }
         }
 
-        IRowCacheEntry getFromCapi(RowCacheKey key) {
-            int hash = hashFunc.hashCode(key.key);
-            long lba = getLBA(hash);
-
+        IRowCacheEntry getFromCapi(RowCacheKey key, int hash) {
             final AtomicReference<Object> ref = new AtomicReference<Object>(null);
 
             try {
-                sm.readAsync(lba, CapiBlockDevice.BLOCK_SIZE, new CapiChunkDriver.AsyncHandler() {
+                sm.readAsync(getLBA(hash) * CapiBlockDevice.BLOCK_SIZE, CapiBlockDevice.BLOCK_SIZE, new CapiChunkDriver.AsyncHandler() {
 
                     @Override
                     public void success(ByteBuffer bb) {
@@ -490,32 +493,42 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             int valueSizeInEntry = keyAndValueBB.getInt(); // header 2
 
             int keySize = keySize(key);
-            if (keySize != keySizeInEntry)
+            if (keySize != keySizeInEntry) {
+                logger.info("key size is different.: arg=" + keySize + ", cache=" + keySizeInEntry);
                 return null;
+            }
 
             ByteBuffer keyBB = ByteBuffer.allocateDirect(keySize);
             serializeKey(key, keyBB);
+            keyBB.rewind();
 
-            ByteBuffer keyBBInEntry = ((ByteBuffer) keyAndValueBB.limit(keySize + 2)).slice();
+            ByteBuffer keyBBInEntry = ((ByteBuffer) keyAndValueBB.limit(keySize + 8)).slice();
+            keyBBInEntry.rewind();
 
             if (keyBB.equals(keyBBInEntry)) {
-                keyAndValueBB.rewind().position(valueSizeInEntry + 2);
+                keyAndValueBB.rewind().position(keySize + 8).limit(keySize + valueSizeInEntry + 8);
                 ByteBuffer valueBBInEntry = keyAndValueBB.slice();
                 return deserializeValue(valueBBInEntry);
             } else {
+                logger.info("key value is different.: arg=" + keyBB.capacity() + ", cache=" + keyBBInEntry.capacity());
                 return null;
             }
         }
 
         @Override
         public IRowCacheEntry get(RowCacheKey key) {
+
+            int hash = hashFunc.hashCode(key.key);
+
             IRowCacheEntry entry = map.get(key);
             if (entry == null) {
-                entry = getFromCapi(key);
-                if (entry != null)
-                    swapin.incrementAndGet();
-                else
-                    swapinMiss.incrementAndGet();
+                if (exist(hash, false)) {
+                    entry = getFromCapi(key, hash);
+                    if (entry != null)
+                        swapin.incrementAndGet();
+                    else
+                        swapinMiss.incrementAndGet();
+                }
             }
 
             if (entry == null) {
@@ -596,7 +609,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
     }
 
-    static long logUnit = 100000L;
+    static long logUnit = 1000000L;
     static long lastLog = System.currentTimeMillis();
     static long lastCapiRead = 0L;
     static long lastCapiRowRead = 0L;
@@ -606,7 +619,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         long elapsed = now - lastLog;
         lastLog = now;
 
-        long currentCapiRead = swapin.incrementAndGet() + swapinMiss.incrementAndGet();
+        long currentCapiRead = swapin.get() + swapinMiss.get();
         long count = currentCapiRead - lastCapiRead;
         lastCapiRead = currentCapiRead;
 
@@ -614,7 +627,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         long rowCount = currentCapiRowRead - lastCapiRowRead;
         lastCapiRowRead = currentCapiRowRead;
 
-        logger.info("cache hit/miss : " + cacheHit + "/" + cacheMiss + ", "//
+        logger.info("cache hit/miss/push : " + cacheHit + "/" + cacheMiss + "/" + cachePush + ", "//
                 + "total swapped-in (success/miss/error/remove) : " + swapin + "/" + swapinMiss + "/" + swapinErr + "/" + remove + ", throughput (cache/capi): " + (count / (double) elapsed) * 1000.0 + "/" + (rowCount / (double) elapsed) * 1000.0);
     }
 
