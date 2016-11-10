@@ -149,19 +149,10 @@ public class CacheService implements CacheServiceMBean
             throw new RuntimeException("Cannot find configured row cache provider class " + DatabaseDescriptor.getRowCacheClassName());
         }
 
-        long rowCacheInMemoryCapacity = DatabaseDescriptor.getRowCacheSizeInMB() * 1024 * 1024;
-
         // cache object
         ICache<RowCacheKey, IRowCacheEntry> rc = cacheProvider.create();
-        String cacheType = System.getProperty("rowcache.type");
-        if ("capi".equals(cacheType))
-            rc = new CapiBlockRowCache(rowCacheInMemoryCapacity);
-        else
-            rc = cacheProvider.create();
         AutoSavingCache<RowCacheKey, IRowCacheEntry> rowCache = new AutoSavingCache<>(rc, CacheType.ROW_CACHE, new RowCacheSerializer());
         
-        logger.info("row cache type: " + (cacheType == null ? "default" : cacheType) + ":" + rc.getClass().getName());
-
         int rowCacheKeysToSave = DatabaseDescriptor.getRowCacheKeysToSave();
 
         rowCache.scheduleSaving(DatabaseDescriptor.getRowCacheSavePeriod(), rowCacheKeysToSave);

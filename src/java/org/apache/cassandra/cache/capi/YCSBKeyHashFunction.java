@@ -2,7 +2,7 @@ package org.apache.cassandra.cache.capi;
 
 import java.util.Arrays;
 
-import org.apache.cassandra.cache.CapiBlockRowCache.HashFunction;
+import org.apache.cassandra.cache.CapiRowCacheProvider.HashFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
