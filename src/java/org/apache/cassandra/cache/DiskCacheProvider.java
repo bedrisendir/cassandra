@@ -1,18 +1,19 @@
 package org.apache.cassandra.cache;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.apache.cassandra.cache.CapiRowCacheProvider.HashFunction;
 import org.apache.cassandra.cache.SerializingCacheProvider.RowCacheSerializer;
 import org.apache.cassandra.cache.capi.CapiChunkDriver;
-import org.apache.cassandra.cache.capi.SimpleCapiSpaceManager;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.util.DataInputBuffer;
@@ -23,14 +24,21 @@ import org.slf4j.LoggerFactory;
 
 import com.googlecode.concurrentlinkedhashmap.ConcurrentLinkedHashMap;
 import com.googlecode.concurrentlinkedhashmap.Weigher;
-import com.ibm.research.capiblock.CapiBlockDevice;
+import com.sun.jna.Library;
+import com.sun.jna.Native;
+import com.sun.jna.NativeLong;
+import com.sun.jna.Platform;
+import com.sun.jna.Pointer;
+import com.sun.jna.ptr.PointerByReference;
 
-public class CapiRowCacheProvider implements org.apache.cassandra.cache.CacheProvider<RowCacheKey, IRowCacheEntry> {
-    private static final Logger logger = LoggerFactory.getLogger(CapiRowCacheProvider.class);
+public class DiskCacheProvider implements org.apache.cassandra.cache.CacheProvider<RowCacheKey, IRowCacheEntry> {
+    private static final Logger logger = LoggerFactory.getLogger(DiskCacheProvider.class);
+
+    public static final int ENTRY_SIZE = 4096;
 
     public static final int DEFAULT_L2CACHE = 128 * 1024 * 1024;
     public static final int DEFAULT_CONCURENCY_LEVEL = 64;
-    public static final String PROP_CAPI_DEVICE_NAMES = "capi.devices";
+    public static final String PROP_DIR = "odirect.dir";
     public static final long DEFAULT_SIZE_IN_GB_BYTES = 1L; // 1 gb
 
     public static AtomicLong touched = new AtomicLong();
@@ -42,28 +50,94 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
     public static AtomicLong swapinErr = new AtomicLong();
     public static AtomicLong remove = new AtomicLong();
 
-    public interface HashFunction {
-        int hashCode(byte[] bb);
+    public interface LibC extends Library {
+        //int read(int fd, byte[] buf, int count);
+        int read(int fd, ByteBuffer buf, int count);
 
-        String toString(byte[] bb);
+        int write(int fd, ByteBuffer buf, int count);
+
+        int fsync(int fd);
+
+        int open(String path, int flags, int mode);
+
+        int open(String path, int flags);
+
+        int close(int fd);
+
+        int lseek(int fd, long offset, int whence);
+
+        int posix_memalign(PointerByReference pp, long alignment, long size);
+
+        void free(Pointer p);
+
+        String strerror(int errnum);
+
+    }
+
+    public static final LibC LIBC = (LibC) Native.loadLibrary(Platform.C_LIBRARY_NAME, LibC.class);
+
+    private static final int O_RDONLY = 00000000;
+    private static final int O_WRONLY = 00000001;
+    private static final int O_RDWR = 00000002;
+    private static final int O_DIRECT;
+    private static final int O_SYNC = 04000000;
+    private static final int SEEK_SET = 0;
+    private static final int S_IRUSR = 0000400;
+    private static final int S_IRWXU = 0000700;
+
+    static {
+        Native.register(Platform.C_LIBRARY_NAME);
+
+        if ("ppc64le".equals(System.getProperty("os.arch")))
+            O_DIRECT = 00400000;
+        else
+            O_DIRECT = 00040000;
+    }
+
+    public static native void free(Pointer p);
+
+    private static native int open(String pathname, int flags, int mode);
+
+    public native int close(int fd);
+
+    private static native NativeLong lseek(int fd, NativeLong offset, int whence);
+
+    private static native NativeLong read(int fd, Pointer buf, NativeLong count);
+
+    private static native NativeLong write(int fd, Pointer buf, NativeLong count);
+
+    private static native String strerror(int errnum);
+
+    private static native int fsync(int fd, Pointer buf, NativeLong count);
+
+    public static int openDirect(String pathname) throws IOException {
+        int ret = LIBC.open(pathname, O_RDWR | O_DIRECT, S_IRWXU);
+
+        if (ret < 0)
+            throw new IOException("open error: " + pathname + ", " + LIBC.strerror(Native.getLastError()));
+
+        return ret;
     }
 
     @Override
     public ICache<RowCacheKey, IRowCacheEntry> create() {
-        return new CapiRowCache(DatabaseDescriptor.getRowCacheSizeInMB() * 1024 * 1024);
+        return new FileRowCache(DatabaseDescriptor.getRowCacheSizeInMB() * 1024 * 1024);
     }
 
-    public static class CapiRowCache implements ICache<RowCacheKey, IRowCacheEntry> {
+    public static class FileRowCache implements ICache<RowCacheKey, IRowCacheEntry> {
 
         private final ConcurrentLinkedHashMap<RowCacheKey, IRowCacheEntry> map;
         private final ISerializer<IRowCacheEntry> serializer = new RowCacheSerializer();
         final HashFunction hashFunc;
         final AtomicInteger size = new AtomicInteger();
-        final SimpleCapiSpaceManager sm;
         final int[] filters;
         final ReentrantLock[] monitors = new ReentrantLock[Runtime.getRuntime().availableProcessors() * 64];
+        final int[] fds = new int[Runtime.getRuntime().availableProcessors() * 64];
+        final long numOfBlocks;
+        final long numOfBlocksForEach;
+        final long sizeInBytes;
 
-        CapiRowCache(long capacity) {
+        FileRowCache(long capacity) {
             this.map = new ConcurrentLinkedHashMap.Builder<RowCacheKey, IRowCacheEntry>().weigher(new Weigher<IRowCacheEntry>() {
                 public int weightOf(IRowCacheEntry value) {
                     long serializedSize = serializer.serializedSize(value);
@@ -81,7 +155,8 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                         return Arrays.hashCode(key);
                     }
 
-                    public String toString(byte[] key) {
+                    @Override
+                    public String toString(byte[] bb) {
                         return "unknown";
                     }
                 } : (HashFunction) Class.forName(hashClass).newInstance();
@@ -89,64 +164,59 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                 throw new IllegalStateException(e);
             }
 
-            int blocksize = CapiBlockDevice.BLOCK_SIZE;
-            int numOfAsync = Integer.parseInt(System.getProperty("capi.async", "64"));
-            int numOfDriver = Integer.parseInt(System.getProperty("capi.driver", "32"));
-
-            String deviceNamesStr = System.getProperty(PROP_CAPI_DEVICE_NAMES);
-            if (deviceNamesStr == null) {
-                logger.error("no valid device name in " + PROP_CAPI_DEVICE_NAMES);
-                throw new IllegalStateException("no valid device name in " + PROP_CAPI_DEVICE_NAMES);
+            // -Dodirect.dir=/home/horii/filename:<GB_SIZE>
+            String dirNameSize = System.getProperty(PROP_DIR);
+            if (dirNameSize == null) {
+                logger.error("format error in " + PROP_DIR + ": " + dirNameSize);
+                throw new IllegalStateException("no valid device name in " + PROP_DIR);
             }
 
-            this.sm = new SimpleCapiSpaceManager();
+            String[] dirNameSizes = dirNameSize.split(":");
+            if (dirNameSizes.length != 2) {
+                logger.error("format error in " + PROP_DIR + ": " + dirNameSize);
+                throw new IllegalStateException("no valid device name in " + PROP_DIR);
+            }
 
-            // -Dcapi.devices=/dev/sg7:<OFFSET>:<GB_SIZE>:/dev/sg7:/dev/sg8:/dev/sg8,/dev/sdc:<OFFSET>:<GB_SIZE>
-            String[] deviceInfos = deviceNamesStr.split(",");
+            String dirName = dirNameSizes[0];
+            sizeInBytes = 1024L * 1024L * 1024L * Long.parseLong(dirNameSizes[1]);
+            long sizeForEachTmp = sizeInBytes / monitors.length;
+            if (sizeInBytes % monitors.length != 0)
+                sizeForEachTmp++;
 
-            StringBuffer storageArea = new StringBuffer();
-            boolean first = true;
-            for (String deviceInfo : deviceInfos) {
+            numOfBlocks = sizeInBytes / ENTRY_SIZE;
+            long maskSize = numOfBlocks / 32L + (numOfBlocks % 32L == 0 ? 0 : 1);
+            filters = new int[(int) maskSize];
+
+            int numOfFiles = monitors.length;
+            numOfBlocksForEach = numOfBlocks / numOfFiles + 1;
+
+            sizeForEachTmp = (sizeForEachTmp / ENTRY_SIZE) * ENTRY_SIZE;
+            if (sizeForEachTmp % ENTRY_SIZE != 0)
+                sizeForEachTmp += ENTRY_SIZE;
+
+            File[] files = new File[monitors.length];
+            for (int i = 0; i < numOfFiles; ++i) {
+                files[i] = new File(dirName + "/odirect" + i);
                 try {
-                    // /dev/sdb:<OFFSET>:<GB_SIZE>
-                    String[] deviceAttrs = deviceInfo.split(":");
-                    String deviceName = deviceAttrs[0];
-                    long offset = deviceAttrs.length > 1 ? Long.parseLong(deviceAttrs[1]) : 0;
-                    long sizeInBytes = 1024L * 1024L * 1024L * (deviceAttrs.length > 2 ? Long.parseLong(deviceAttrs[2]) : DEFAULT_SIZE_IN_GB_BYTES);
-                    String[] devices = new String[1 + Math.max(0, deviceAttrs.length - 3)];
-                    devices[0] = deviceName;
-                    for (int i = 0; i < devices.length - 1; ++i)
-                        devices[i + 1] = deviceAttrs[i + 3];
-                    CapiChunkDriver driver = new CapiChunkDriver(devices, numOfAsync);
-                    sm.add(driver, offset, sizeInBytes / (long) CapiBlockDevice.BLOCK_SIZE);
-
-                    if (first)
-                        first = false;
-                    else
-                        storageArea.append(",");
-                    storageArea.append(deviceName + ":" + (sizeInBytes / 1024.0 / 1024.0 / 1024.0) + "gb [" + Long.toHexString(offset) + "-" + Long.toHexString(offset + (sizeInBytes / (long) CapiBlockDevice.BLOCK_SIZE) * (long) CapiBlockDevice.BLOCK_SIZE) + "]");
-                    logger.info("capicache: device=" + deviceName + ", start=" + offset + ", size=" + (sizeInBytes / 1024.0 / 1024.0 / 1024.0) + "gb");
-                } catch (IOException ex) {
-                    logger.error("errors to create chunks for " + deviceNamesStr, ex);
-                    throw new IllegalStateException(ex);
+                    RandomAccessFile rFile = new RandomAccessFile(files[i], "rw");
+                    rFile.setLength(numOfBlocksForEach * ENTRY_SIZE);
+                    rFile.close();
+                } catch (Exception e) {
+                    throw new IllegalStateException("no valid device name in " + PROP_DIR, e);
                 }
             }
 
             try {
-                sm.initialize(false);
-            } catch (IOException ex) {
-                logger.error("errors to initialize storage manager " + deviceNamesStr, ex);
-                throw new IllegalStateException(ex);
+                for (int i = 0; i < fds.length; ++i) {
+                    fds[i] = (openDirect(files[i].getAbsolutePath()));
+                }
+            } catch (IOException e) {
+                throw new IllegalStateException("no valid device name in " + PROP_DIR, e);
             }
-
-            long capiSize = sm.getLimitInBlocks();
-            long maskSize = capiSize / 32 + (capiSize % 32 == 0 ? 0 : 1);
-            filters = new int[(int) maskSize];
 
             for (int i = 0; i < monitors.length; ++i)
                 monitors[i] = new ReentrantLock();
 
-            logger.info("capi-rowcache: blocksize=" + (blocksize / 1024) + "kb, asynch=" + numOfAsync + ", driver=" + numOfDriver + ",  hash=" + hashFunc.getClass().getName() + ", area=" + storageArea + ", entry=" + capiSize);
         }
 
         public int hashCode(RowCacheKey key) {
@@ -249,6 +319,16 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             monitor.unlock();
         }
 
+        int fd(int hash) {
+            int idx = (int) (Math.abs(hash) / numOfBlocksForEach);
+            return fds[idx];
+        }
+
+        int pos(int hash) {
+            hash = Math.abs(hash);
+            return (int) (hash % numOfBlocksForEach) * ENTRY_SIZE;
+        }
+
         boolean exist(int hash, boolean withLock) {
             hash = Math.abs(hash);
 
@@ -256,7 +336,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             if (withLock)
                 monitor.lock();
             try {
-                int maskIdx = hash / 32 % filters.length;
+                int maskIdx = hash % filters.length;
                 int maxPos = hash % 32;
                 int mask = filters[maskIdx];
                 int maskFilter = 1 << maxPos;
@@ -274,7 +354,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             if (withLock)
                 monitor.lock();
             try {
-                int maskIdx = hash / 32 % filters.length;
+                int maskIdx = hash % filters.length;
                 int maxPos = hash % 32;
                 int maskFilter = 1 << maxPos;
                 filters[maskIdx] |= maskFilter;
@@ -291,7 +371,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             if (withLock)
                 monitor.lock();
             try {
-                int maskIdx = hash / 32 % filters.length;
+                int maskIdx = hash % filters.length;
                 int maxPos = hash % 32;
                 int maskFilter = 1 << maxPos;
                 filters[maskIdx] &= ~maskFilter;
@@ -302,12 +382,12 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         }
 
         long getLBA(int hash) {
-            return Math.abs(hash) % sm.getLimitInBlocks();
+            return Math.abs(hash) % numOfBlocks;
         }
 
         @Override
         public long capacity() {
-            return sm.getLimitInBytes();
+            return sizeInBytes;
         }
 
         @Override
@@ -330,79 +410,51 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             int hash = hashFunc.hashCode(key.key);
             lock(hash);
             try {
-                putToCapi(key, hash, value, false);
+                putToFile(key, hash, value, false);
                 map.put(key, value);
                 filled(hash, false);
-
-                if (cachePush.incrementAndGet() % logUnit == 0)
-                    log();
+                cachePush.incrementAndGet();
 
             } finally {
                 unlock(hash);
             }
         }
 
-        private void putToCapi(RowCacheKey key, int hash, IRowCacheEntry value, boolean withLock) {
+        private void putToFile(RowCacheKey key, int hash, IRowCacheEntry value, boolean withLock) {
             int keySize = keySize(key);
             int valueSize = valueSize(value);
 
-            if (keySize + valueSize > CapiBlockDevice.BLOCK_SIZE - 8)
+            if (keySize + valueSize > ENTRY_SIZE - 8)
                 return;
 
-            ByteBuffer bb = ByteBuffer.allocateDirect(CapiBlockDevice.BLOCK_SIZE);
+            ByteBuffer bb = ByteBuffer.allocateDirect(ENTRY_SIZE);
             bb.putInt(keySize);
             bb.putInt(valueSize);
             serializeKey(key, bb);
             serializeValue(value, bb);
 
-            final AtomicReference<Object> ref = new AtomicReference<Object>(null);
             if (withLock)
                 lock(hash);
 
             try {
-                sm.writeAsync(getLBA(hash) * CapiBlockDevice.BLOCK_SIZE, bb, new CapiChunkDriver.AsyncHandler() {
-
-                    @Override
-                    public void success(ByteBuffer bb) {
-                        ref.set(bb);
-                        synchronized (ref) {
-                            ref.notify();
-                        }
-                    }
-
-                    @Override
-                    public void error(String msg) {
-                        ref.set(msg);
-                        synchronized (ref) {
-                            ref.notify();
-                        }
-                    }
-                });
-
-                synchronized (ref) {
-                    if (ref.get() == null)
-                        try {
-                            ref.wait();
-                        } catch (InterruptedException e) {
-                            logger.error(e.getMessage(), e);
-                            throw new IllegalStateException(e.getMessage(), e);
-                        }
+                bb.rewind();
+                int fd = fd(hash);
+                LIBC.lseek(fd, pos(hash), SEEK_SET);
+                int ret;
+                if ((ret = LIBC.write(fd, bb, ENTRY_SIZE)) != ENTRY_SIZE) {
+                    logger.warn("write error");
+                    throw new Exception("write error: msg=" + LIBC.strerror(Native.getLastError()) + ", fd=" + fd + ", pos=" + pos(hash) + ", ret=" + ret);
                 }
+                LIBC.fsync(fd);
 
-                Object ret = ref.get();
-                if (ret instanceof String) {
-                    logger.error((String) ret);
-                    throw new IllegalStateException((String) ret);
-                }
-
-            } catch (IOException ex) {
+            } catch (Exception ex) {
                 logger.error(ex.getMessage(), ex);
                 return;
             } finally {
                 if (withLock)
                     unlock(hash);
             }
-            //logger.info("put: key=" + hashFunc.toString(key.key) + ", hash=" + hash + ", lba=" + getLBA(hash));
+
         }
 
         @Override
@@ -414,11 +466,10 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                     return false;
 
                 map.put(key, value);
-                putToCapi(key, hash, value, false);
+                putToFile(key, hash, value, false);
                 filled(hash, false);
 
-                if (cachePush.incrementAndGet() % logUnit == 0)
-                    log();
+                cachePush.incrementAndGet();
 
                 return true;
             } finally {
@@ -436,7 +487,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
                 IRowCacheEntry current = map.get(key);
                 if (current == null) {
-                    current = getFromCapi(key, hash);
+                    current = getFromFile(key, hash);
                     if (current == null) {
                         logger.error("filter is not consistent.");
                         return false;
@@ -444,11 +495,10 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                 }
 
                 map.put(key, value);
-                putToCapi(key, hash, value, false);
+                putToFile(key, hash, value, false);
                 //filled(hash, false);
 
-                if (cachePush.incrementAndGet() % logUnit == 0)
-                    log();
+                cachePush.incrementAndGet();
 
                 return true;
             } finally {
@@ -456,55 +506,23 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             }
         }
 
-        IRowCacheEntry getFromCapi(RowCacheKey key, int hash) {
-            final AtomicReference<Object> ref = new AtomicReference<Object>(null);
-
+        IRowCacheEntry getFromFile(RowCacheKey key, int hash) {
+            ByteBuffer keyAndValueBB = ByteBuffer.allocateDirect(ENTRY_SIZE);
             try {
-                sm.readAsync(getLBA(hash) * CapiBlockDevice.BLOCK_SIZE, CapiBlockDevice.BLOCK_SIZE, new CapiChunkDriver.AsyncHandler() {
-
-                    @Override
-                    public void success(ByteBuffer bb) {
-                        ref.set(bb);
-                        synchronized (ref) {
-                            ref.notify();
-                        }
-                    }
-
-                    @Override
-                    public void error(String msg) {
-                        ref.set(msg);
-                        synchronized (ref) {
-                            ref.notify();
-                        }
-                    }
-                });
-            } catch (IOException e) {
+                int fd = fd(hash);
+                LIBC.lseek(fd, pos(hash), SEEK_SET);
+                LIBC.read(fd, keyAndValueBB, ENTRY_SIZE);
+            } catch (Exception e) {
                 logger.error(e.getMessage(), e);
                 return null;
             }
 
-            synchronized (ref) {
-                if (ref.get() == null)
-                    try {
-                        ref.wait();
-                    } catch (InterruptedException e) {
-                        logger.error(e.getMessage(), e);
-                        throw new IllegalStateException(e.getMessage(), e);
-                    }
-            }
-
-            Object ret = ref.get();
-            if (ret instanceof String) {
-                logger.error((String) ret);
-                throw new IllegalStateException((String) ret);
-            }
-            ByteBuffer keyAndValueBB = (ByteBuffer) ref.get();
             int keySizeInEntry = keyAndValueBB.getInt(); // header 1
             int valueSizeInEntry = keyAndValueBB.getInt(); // header 2
 
             int keySize = keySize(key);
             if (keySize != keySizeInEntry) {
-                logger.info("key size is different.: key=" + hashFunc.toString(key.key) + ", hash=" + hash + ", lba=" + getLBA(hash) + ", arg=" + keySize + ", cache=" + keySizeInEntry);
+                //logger.info("key size is different.: arg=" + keySize + ", cache=" + keySizeInEntry);
                 return null;
             }
 
@@ -520,7 +538,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                 ByteBuffer valueBBInEntry = keyAndValueBB.slice();
                 return deserializeValue(valueBBInEntry);
             } else {
-                logger.info("key value is different.: arg=" + keyBB.capacity() + ", cache=" + keyBBInEntry.capacity());
+                //logger.info("key value is different.: arg=" + keyBB.capacity() + ", cache=" + keyBBInEntry.capacity());
                 return null;
             }
         }
@@ -533,7 +551,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
             IRowCacheEntry entry = map.get(key);
             if (entry == null) {
                 if (exist(hash, false)) {
-                    entry = getFromCapi(key, hash);
+                    entry = getFromFile(key, hash);
                     if (entry != null)
                         swapin.incrementAndGet();
                     else
@@ -621,21 +639,21 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
     static long logUnit = 100000L;
     static long lastLog = System.currentTimeMillis();
-    static long lastCapiRead = 0L;
-    static long lastCapiRowRead = 0L;
+    static long lastFileRead = 0L;
+    static long lastFileRowRead = 0L;
 
     static synchronized void log() {
         long now = System.currentTimeMillis();
         long elapsed = now - lastLog;
         lastLog = now;
 
-        long currentCapiRead = swapin.get() + swapinMiss.get();
-        long count = currentCapiRead - lastCapiRead;
-        lastCapiRead = currentCapiRead;
+        long currentFileRead = swapin.get() + swapinMiss.get();
+        long count = currentFileRead - lastFileRead;
+        lastFileRead = currentFileRead;
 
-        long currentCapiRowRead = CapiChunkDriver.executed.get();
-        long rowCount = currentCapiRowRead - lastCapiRowRead;
-        lastCapiRowRead = currentCapiRowRead;
+        long currentFileRowRead = CapiChunkDriver.executed.get();
+        long rowCount = currentFileRowRead - lastFileRowRead;
+        lastFileRowRead = currentFileRowRead;
 
         logger.info("cache hit/miss/push : " + cacheHit + "/" + cacheMiss + "/" + cachePush + ", "//
                 + "total swapped-in (success/miss/error/remove) : " + swapin + "/" + swapinMiss + "/" + swapinErr + "/" + remove + ", throughput (cache/capi): " + (count / (double) elapsed) * 1000.0 + "/" + (rowCount / (double) elapsed) * 1000.0);
