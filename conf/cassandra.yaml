@@ -418,15 +418,12 @@ capiflashcommitlog_async_calls_per_chunk : 128
 
 #no configurables for this type of chunk manager- each concurrent_writes thread calls writeblockasync and Future.get immediately.
 #capiflashcommitlog_chunkmanager_type : AsyncChunkManager
-
 #creates number of chunks defined by (capiflashcommitlog_number_of_chunks)
 #implements controls over concurrent_writer threads
-#capiflashcommitlog_chunkmanager_type : AsyncProducerConsumerChunkManager
+capiflashcommitlog_chunkmanager_type : AsyncSemaphoreChunkManager
+
 #max number of consumer threads to consume Future.get() of writeblockAsync calls.
 capiflashcommitlog_number_of_consumer_threads : 32
-
-#capiflashcommitlog_chunkmanager_type : AsyncSemaphoreChunkManager
-capiflashcommitlog_chunkmanager_type : AsyncSemaphoreChunkManager
 
 #number of concurrent_writes threads allowed to call writeBlockAsync
 #also sets the size of the blockingqueue which backs the threadpool that consumes Future.get
