@@ -19,12 +19,12 @@ package org.apache.cassandra.db.commitlog.capi;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -32,7 +32,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
-import org.apache.cassandra.db.commitlog.IntegerInterval;
+import org.apache.cassandra.utils.IntegerInterval;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
@@ -57,8 +57,10 @@ public class FlashSegment {
 
 	// unique id of this segment
 	final long id;
-	final int physical_block_address;// bookkeeping address
+	// bookkeeping address
+	final int physical_block_address;
 
+	// total number of blocks in use for this segment 
 	public AtomicLong currentBlocks = new AtomicLong(0);
 
 	public static long getNextId() {
@@ -99,7 +101,19 @@ public class FlashSegment {
 				+ (long) ((segmentno) * FlashSegmentManager.BLOCKS_IN_SEG)
 				+ start;
 	}
-
+	
+    public static<K> void coverInMap(ConcurrentMap<K, IntegerInterval> map, K key, int value) {
+        IntegerInterval i = map.get(key);
+        if (i == null)
+        {
+            i = map.putIfAbsent(key, new IntegerInterval(value, value));
+            if (i == null)
+                // success
+                return;
+        }
+        i.expandToCover(value);
+    }
+    
 	public void markDirty(Mutation mutation, int allocatedPosition) {
 		for (PartitionUpdate update : mutation.getPartitionUpdates())
             coverInMap(cfDirty, update.metadata().cfId, allocatedPosition);
@@ -111,26 +125,29 @@ public class FlashSegment {
             return;
         if (!cfDirty.containsKey(cfId))
             return;
+        
         int start = startPosition.segmentId == id ? startPosition.position : 0;
         int end = endPosition.segmentId == id ? endPosition.position : Integer.MAX_VALUE;
+    
         cfClean.computeIfAbsent(cfId, k -> new IntegerInterval.Set()).add(start, end);
+        
         Iterator<Map.Entry<UUID, IntegerInterval.Set>> iter = cfClean.entrySet().iterator();
         while (iter.hasNext())
         {
             Map.Entry<UUID, IntegerInterval.Set> clean = iter.next();
-            UUID cfId = clean.getKey();
+            UUID xcfId = clean.getKey();
             IntegerInterval.Set cleanSet = clean.getValue();
-            IntegerInterval dirtyInterval = cfDirty.get(cfId);
+            IntegerInterval dirtyInterval = cfDirty.get(xcfId);
             if (dirtyInterval != null && cleanSet.covers(dirtyInterval))
             {
-                cfDirty.remove(cfId);
+                cfDirty.remove(xcfId);
                 iter.remove();
             }
         }
 	}
 
 	public synchronized boolean isUnused() {
-		return cfLastWrite.isEmpty();
+		  return cfDirty.isEmpty();
 	}
 
 	public boolean contains(CommitLogPosition context) {
@@ -138,7 +155,7 @@ public class FlashSegment {
 	}
 	
     /**
-     * @return a collection of dirty CFIDs for this segment file.
+     * @return a collection of dirty CFIDs for this segment.
      */
     public synchronized Collection<UUID> getDirtyCFIDs()
     {

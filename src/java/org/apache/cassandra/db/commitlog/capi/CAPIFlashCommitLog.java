@@ -23,13 +23,20 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.Config.CAPIFlashCommitlogChunkManagerType;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.commitlog.capi.bufferallocator.BufferAllocationStrategy;
+import org.apache.cassandra.db.commitlog.capi.bufferallocator.FixedAllocationStrategy;
+import org.apache.cassandra.db.commitlog.capi.bufferallocator.PooledAllocationStrategy;
+import org.apache.cassandra.db.commitlog.capi.storage.AsyncChunkManager;
+import org.apache.cassandra.db.commitlog.capi.storage.ChunkManager;
+import org.apache.cassandra.db.commitlog.capi.storage.SyncChunkManager;
+import org.apache.cassandra.db.commitlog.capi.util.CheckSummedBuffer;
 import org.apache.cassandra.metrics.DefaultNameFactory;
 import org.apache.cassandra.net.MessagingService;
 import org.slf4j.Logger;
@@ -38,74 +45,64 @@ import org.slf4j.LoggerFactory;
 import com.ibm.research.capiblock.CapiBlockDevice;
 
 public class CAPIFlashCommitLog implements ICommitLog {
+	private static final Logger logger = LoggerFactory.getLogger(CAPIFlashCommitLog.class);
 	static long START_OFFSET = DatabaseDescriptor.getCAPIFlashCommitLogStartOffset();
 	static String[] DEVICES = DatabaseDescriptor.getCAPIFlashCommitLogDevices();
 	static long DATA_OFFSET = START_OFFSET + FlashSegmentManager.MAX_SEGMENTS;
-	static final Logger logger = LoggerFactory.getLogger(CAPIFlashCommitLog.class);
 	public static final CAPIFlashCommitLog instance = new CAPIFlashCommitLog();
-	final CapiBlockDevice dev = CapiBlockDevice.getInstance();
-	FlashSegmentManager fsm;
-	public  ChunkManager chunkManager;
-	public  BufferAllocationStrategy bufferAlloc;
+	private FlashSegmentManager fsm;
+	private  ChunkManager chunkManager;
+	private  BufferAllocationStrategy bufferAlloc;
 	
 	protected CAPIFlashCommitLog() {
 		try {
-			logger.error("--------->"
-					+ "Setting up capiflashcommitlog");
+			logger.info("Setting up CapiFlash Commitlog");
 			fsm = new FlashSegmentManager(CapiBlockDevice.getInstance().openChunk(DEVICES[0]));
 			CAPIFlashCommitlogChunkManagerType cmType = DatabaseDescriptor.getCAPIFlashCommitLogChunkManager();
-			if (cmType == Config.CAPIFlashCommitlogChunkManagerType.AsyncProducerConsumerChunkManager) {
-				chunkManager = new AsyncProducerConsumerChunkManager();
-			} else if (cmType == Config.CAPIFlashCommitlogChunkManagerType.AsyncSemaphoreChunkManager) {
-				chunkManager = new AsyncSemaphoreChunkManager();
+			if (cmType == Config.CAPIFlashCommitlogChunkManagerType.SyncChunkManager) {
+				chunkManager = new SyncChunkManager();
 			} else {
 				chunkManager = new AsyncChunkManager();
 			}
 			bufferAlloc = DatabaseDescriptor
 					.getCAPIFlashCommitLogBufferAllocationStrategy() == Config.CAPIFlashCommitlogBufferAllocationStrategyType.PooledAllocationStrategy
-							? new PooledAllocationStrategy() : new FixedSizeAllocationStrategy();
+							? new PooledAllocationStrategy(DatabaseDescriptor.getCAPIFlashCommitlogNumberOfAsyncWrite()) : new FixedAllocationStrategy();
 
 		} catch (IOException e1) {
 			e1.printStackTrace();
+			System.exit(0);
 		}
 	}
 
 	/**
-	 * Appends row mutation to CommitLog Called from
-	 * org.apache.cassandra.db.Keyspace.java Line 348 adds each mutation to
-	 * Commitlog
+	 * Appends row mutation to CommitLog
 	 * 
 	 * @param
 	 */
 	public CommitLogPosition add(Mutation rm) {
-		//test1.incrementAndGet();
-		//test2.incrementAndGet();
-		//logger.error(fsm.freelist.size()+"----------"+rm.getKeyspaceName());
 		assert rm != null;
 		long totalSize = Mutation.serializer.serializedSize(rm, MessagingService.current_version) + 28;
 		int requiredBlocks = getBlockCount(totalSize);
 		if (requiredBlocks > DatabaseDescriptor.getCAPIFlashCommitLogSegmentSizeInBlocks()) {
-			// || requiredBlocks >
-			// DatabaseDescriptor.getFlashCommitLogThreadBufferSizeinMB() *
-			// (256)) {
 			throw new IllegalArgumentException(
 					String.format("Mutation of %s blocks is too large for the maxiumum size of %s", totalSize,
 							DatabaseDescriptor.getCAPIFlashCommitLogSegmentSizeInBlocks()));
 		}
 		FlashRecordAdder adder = null;
 		adder = fsm.allocate(requiredBlocks, rm);
+		//if we are out of space we immediately return to callee and throw exception
+		//callee releases oporder for the current thread when exception occurs
 		if (adder == null) {
 			return null;
 		}
 		CheckSummedBuffer buf = null;
 		buf = bufferAlloc.poll(requiredBlocks);
-		// fill the buffer
 		try {
-			buf.getStream().writeLong(adder.getSegmentID());
-			buf.getStream().writeInt((int) totalSize);
-			buf.getBuffer().putLong(buf.calculateCRC(0, 12).getValue()); // TODO
+			buf.getBuffer().putLong(adder.getSegmentID());
+			buf.getBuffer().putInt((int) totalSize);
+			buf.getBuffer().putLong(buf.calculateCRC(0, 12).getValue()); 
 			Mutation.serializer.serialize(rm, buf.getStream(), MessagingService.current_version);
-			buf.getBuffer().putLong(buf.calculateCRC(20, ((int) totalSize) - 28).getValue()); // TODO
+			buf.getBuffer().putLong(buf.calculateCRC(20, ((int) totalSize) - 28).getValue()); 
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -166,8 +163,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 	/**
 	 * Recover
 	 */
-	public int recover() {
-		//TODO Implement
+	public int recover() {	
 		
 		long startTime = System.currentTimeMillis();
 		FlashBulkReplayer r = new FlashBulkReplayer();
@@ -179,8 +175,9 @@ public class CAPIFlashCommitLog implements ICommitLog {
 		long count = r.blockForWrites();
 		fsm.recycleAfterReplay();
 		long estimatedTime = System.currentTimeMillis() - startTime;
-		logger.error("------------------------>" + " Replayed " + count + " records in " + estimatedTime);
+		logger.error("Replayed " + count + " records in " + estimatedTime + " ms");
 		return (int) count;
+		
 	}
 
 	/**
@@ -195,6 +192,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 		}
 	}
 
+	/**/
 	public CommitLogPosition getCurrentPosition() {
 		return fsm.active.getContext();
 	}
@@ -215,7 +213,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 	@Override
 	public void await() {
 		fsm.hasAvailableSegments.register(Metrics
-				.timer(new DefaultNameFactory("CommitLog").createMetricName("WaitingOnSegmentAllocation")).time())
+				.timer(new DefaultNameFactory("CAPIFlashCommitlog").createMetricName("WaitingOnSegmentAllocation")).time())
 				.awaitUninterruptibly();
 	}
 }

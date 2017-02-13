@@ -317,7 +317,6 @@ public class DatabaseDescriptor
 
     private static void applySimpleConfig()
     {
-        conf = config;
         if (conf.commitlog_type == null) {
           	 throw new ConfigurationException("Missing required directive CommitlogType", false);
         }
@@ -1551,17 +1550,6 @@ public class DatabaseDescriptor
 	public static long getCAPIFlashCommitLogStartOffset() {
 		return conf.capiflashcommitlog_start_offset;
 	}
-	public static boolean isCommitlogDebugEnabled() {
-		return conf.capiflashcommitlog_debug_enabled;
-	}
-	
-	public static double getCAPIFlashCommitLogFlushThresHold() {
-		return conf.capiflashcommitlog_flush_threshold;
-	}
-
-	public static long getCAPIFlashCommitLogFlushCheckInterval() {
-		return conf.capiflashcommitlog_refresh_interval_in_seconds*1000;
-	}
 	
 	public static Config.CAPIFlashCommitlogChunkManagerType getCAPIFlashCommitLogChunkManager() {
 		return conf.capiflashcommitlog_chunkmanager_type;
@@ -1587,10 +1575,6 @@ public class DatabaseDescriptor
 	}
 
 	public static int getCAPIFlashCommitlogNumberOfAsyncWrite() {
-		return conf.capiflashcommitlog_number_of_concurrent_writeBlock;
-	}
-	
-	public static int getCAPIFlashCommitlogMaxNumberOfConsumers() {
 		return conf.capiflashcommitlog_number_of_concurrent_writeBlock;
 	}
 

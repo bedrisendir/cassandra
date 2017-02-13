@@ -17,47 +17,43 @@
  */
 package org.apache.cassandra.db.commitlog.capi;
 
-import java.io.DataInputStream;
-import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.*;
-import java.util.concurrent.ExecutionException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Predicate;
-import com.google.common.base.Throwables;
-import com.google.common.collect.*;
-import com.google.common.util.concurrent.Uninterruptibles;
-import com.ibm.research.capiblock.Chunk;
-
-import org.apache.commons.lang3.StringUtils;
-import org.cliffc.high_scale_lib.NonBlockingHashSet;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.Mutation;
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.db.rows.SerializationHelper;
-import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.DataInputBuffer;
-import org.apache.cassandra.io.util.FastByteArrayInputStream;
 import org.apache.cassandra.io.util.RebufferingInputStream;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.WrappedRunnable;
+import org.cliffc.high_scale_lib.NonBlockingHashSet;
+import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.collect.Ordering;
+import com.ibm.research.capiblock.Chunk;
+
 public class FlashBulkReplayer {
-	private static int BULK_BLOCKS_TO_READ = 8000;// 32 MB pieces
+	private static int BULK_BLOCKS_TO_READ = 4000;// 32 MB pieces
 	static final Logger logger = LoggerFactory.getLogger(FlashBulkReplayer.class);
 	private static final int MAX_OUTSTANDING_REPLAY_COUNT = 2 * 1024 * 1024;
 	private final Set<Keyspace> keyspacesRecovered;
@@ -135,7 +131,7 @@ public class FlashBulkReplayer {
 			// TODO read 128 mb
 			while (blocks != FlashSegmentManager.BLOCKS_IN_SEG) {
 				readerBuffer.clear();
-				logger.debug("Reading " + start + " end:" + blocks);
+				logger.error("CAPI Reading " + start + " end:" + blocks + " realstart:"+(CAPIFlashCommitLog.DATA_OFFSET + key * FlashSegmentManager.BLOCKS_IN_SEG) + blocks +"realend:"+BULK_BLOCKS_TO_READ);
 				ch.readBlock((CAPIFlashCommitLog.DATA_OFFSET + key * FlashSegmentManager.BLOCKS_IN_SEG) + blocks,
 						BULK_BLOCKS_TO_READ, readerBuffer);
 				blocks += BULK_BLOCKS_TO_READ;

@@ -201,9 +201,6 @@ public class Config
     public String[] capiflashcommitlog_devices;
     public int capiflashcommitlog_number_of_segments;
     public int capiflashcommitlog_segments_size_in_blocks;
-    public boolean capiflashcommitlog_debug_enabled = false;
-    public double capiflashcommitlog_flush_threshold = 0.2;
-    public int capiflashcommitlog_refresh_interval_in_seconds = 2;
     
     public CAPIFlashCommitlogChunkManagerType capiflashcommitlog_chunkmanager_type;
     public CAPIFlashCommitlogBufferAllocationStrategyType capiflashcommitlog_buffer_allocator_type;
@@ -214,7 +211,6 @@ public class Config
 
     //CAPIFlash CommitLog - AsyncProducerConsumerChunk Manager 
     public int capiflashcommitlog_number_of_concurrent_writeBlock = 128;
-    public int capiflashcommitlog_number_of_consumer_threads = 32;
     
     //CAPIFlash CommitLog - Configurables for Buffer Allocator
     /**
@@ -430,8 +426,7 @@ public class Config
     public static enum CAPIFlashCommitlogChunkManagerType
     {
     	AsyncChunkManager,
-    	AsyncProducerConsumerChunkManager,
-    	AsyncSemaphoreChunkManager
+    	SyncChunkManager
     }
     
     public static enum CAPIFlashCommitlogBufferAllocationStrategyType

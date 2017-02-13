@@ -15,11 +15,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.cassandra.db.commitlog.capi;
+package org.apache.cassandra.db.commitlog.capi.bufferallocator;
 
-public class CommitlogOutofSpaceException extends Exception {
-	
-    public CommitlogOutofSpaceException(String message) {
-        super(message);
-    }
+import org.apache.cassandra.db.commitlog.capi.util.CheckSummedBuffer;
+
+public interface BufferAllocationStrategy {
+	void free(CheckSummedBuffer buf);
+	CheckSummedBuffer poll(long requiredBlocks);
 }

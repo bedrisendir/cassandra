@@ -18,6 +18,7 @@
 package org.apache.cassandra.db.commitlog.capi;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Collections;
@@ -41,6 +42,7 @@ import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.commitlog.capi.storage.ChunkManager;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
 import org.slf4j.Logger;
@@ -56,18 +58,22 @@ import com.ibm.research.capiblock.Chunk;
  *
  */
 public class FlashSegmentManager {
+	static final Logger logger = LoggerFactory.getLogger(FlashSegmentManager.class);
 
 	static final ReentrantLock allocationLock = new ReentrantLock();
 	final WaitQueue hasAvailableSegments = new WaitQueue();
-	static final Logger logger = LoggerFactory.getLogger(FlashSegmentManager.class);
+
 	public static int MAX_SEGMENTS = DatabaseDescriptor.getCAPIFlashCommitLogNumberOfSegments();
 	public static int BLOCKS_IN_SEG = DatabaseDescriptor.getCAPIFlashCommitLogSegmentSizeInBlocks();
-	public static double flush_threshold = DatabaseDescriptor.getCAPIFlashCommitLogFlushThresHold();
+
 	public final BlockingQueue<Integer> freelist = new LinkedBlockingQueue<Integer>(MAX_SEGMENTS);
+
 	private final ConcurrentLinkedQueue<FlashSegment> activeSegments = new ConcurrentLinkedQueue<FlashSegment>();
 	ByteBuffer util = ByteBuffer.allocateDirect(1024 * 4);// utility buffer for
 															// bookkeping
 															// purposes
+	static HashMap<String,Integer> chunkLogger = new HashMap<String,Integer>();
+
 	HashMap<Integer, Long> unCommitted;
 	Chunk bookkeeper = null;
 	volatile FlashSegment active;
@@ -102,11 +108,6 @@ public class FlashSegmentManager {
 			}
 		}
 		activateNextSegment();
-		startBackgroundThread();
-	}
-
-	private void startBackgroundThread() {
-	
 	}
 
 	private void activateNextSegment() {
@@ -153,7 +154,6 @@ public class FlashSegmentManager {
 			return null;
 		}
 		if (active == null || !active.hasCapacityFor(num_blocks)) {
-			logger.error("activation"+num_blocks);
 			activateNextSegment();
 		}
 		active.markDirty(rm, (int) active.currentBlocks.get());
@@ -198,7 +198,7 @@ public class FlashSegmentManager {
 					// it's still possible for a writer to race and finish his
 					// append after the flush.
 					logger.error("Marking clean CF {} that doesn't exist anymore", dirtyCFId);
-					segment.markClean(dirtyCFId, segment.getContext());
+					segment.markClean(dirtyCFId, CommitLogPosition.NONE, segment.getContext());
 				} else if (!flushes.containsKey(dirtyCFId)) {
 					String keyspace = pair.left;
 					final ColumnFamilyStore cfs = Keyspace.open(keyspace).getColumnFamilyStore(dirtyCFId);
@@ -215,7 +215,23 @@ public class FlashSegmentManager {
 	}
 
 	public void forceRecycleAll(Iterable<UUID> droppedCfs) {
-		//TODO
+		// TODO
 	}
-
+	public void printFields(Object obj) throws Exception {
+	    Class<?> objClass = obj.getClass();
+	    Field[] fields = objClass.getFields();
+	    for(Field field : fields) {
+	        String name = field.getName();
+	        Object value = field.get(obj);
+	        if(chunkLogger.containsKey(name)){
+	        	int old = chunkLogger.get(name);
+	        	old+=Integer.valueOf(value.toString());
+	        	chunkLogger.put(name, old);
+	        	
+	        }else{
+	        	chunkLogger.putIfAbsent(name, Integer.valueOf(value.toString()));
+	        }
+	        //System.err.println(name + ": " + value.toString());
+	    }
+	}
 }
