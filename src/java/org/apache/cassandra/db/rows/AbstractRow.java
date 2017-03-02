@@ -20,12 +20,16 @@ import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.util.AbstractCollection;
 import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import com.google.common.collect.Iterables;
 
-import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.CollectionType;
+import org.apache.cassandra.db.marshal.UserType;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.FBUtilities;
 
@@ -67,7 +71,7 @@ public abstract class AbstractRow extends AbstractCollection<ColumnData> impleme
             cd.digest(digest);
     }
 
-    public void validateData(CFMetaData metadata)
+    public void validateData(TableMetadata metadata)
     {
         Clustering clustering = clustering();
         for (int i = 0; i < clustering.size(); i++)
@@ -85,17 +89,17 @@ public abstract class AbstractRow extends AbstractCollection<ColumnData> impleme
             cd.validate();
     }
 
-    public String toString(CFMetaData metadata)
+    public String toString(TableMetadata metadata)
     {
         return toString(metadata, false);
     }
 
-    public String toString(CFMetaData metadata, boolean fullDetails)
+    public String toString(TableMetadata metadata, boolean fullDetails)
     {
         return toString(metadata, true, fullDetails);
     }
 
-    public String toString(CFMetaData metadata, boolean includeClusterKeys, boolean fullDetails)
+    public String toString(TableMetadata metadata, boolean includeClusterKeys, boolean fullDetails)
     {
         StringBuilder sb = new StringBuilder();
         sb.append("Row");
@@ -144,16 +148,34 @@ public abstract class AbstractRow extends AbstractCollection<ColumnData> impleme
                 }
                 else
                 {
-                    ComplexColumnData complexData = (ComplexColumnData)cd;
-                    CollectionType ct = (CollectionType)cd.column().type;
-                    sb.append(cd.column().name).append("={");
-                    int i = 0;
-                    for (Cell cell : complexData)
+                    sb.append(cd.column().name).append('=');
+                    ComplexColumnData complexData = (ComplexColumnData) cd;
+                    Function<Cell, String> transform = null;
+                    if (cd.column().type.isCollection())
                     {
-                        sb.append(i++ == 0 ? "" : ", ");
-                        sb.append(ct.nameComparator().getString(cell.path().get(0))).append("->").append(ct.valueComparator().getString(cell.value()));
+                        CollectionType ct = (CollectionType) cd.column().type;
+                        transform = cell -> String.format("%s -> %s",
+                                                  ct.nameComparator().getString(cell.path().get(0)),
+                                                  ct.valueComparator().getString(cell.value()));
+
                     }
-                    sb.append('}');
+                    else if (cd.column().type.isUDT())
+                    {
+                        UserType ut = (UserType)cd.column().type;
+                        transform = cell -> {
+                            Short fId = ut.nameComparator().getSerializer().deserialize(cell.path().get(0));
+                            return String.format("%s -> %s",
+                                                 ut.fieldNameAsString(fId),
+                                                 ut.fieldType(fId).getString(cell.value()));
+                        };
+                    }
+                    else
+                    {
+                        transform = cell -> "";
+                    }
+                    sb.append(StreamSupport.stream(complexData.spliterator(), false)
+                                           .map(transform)
+                                           .collect(Collectors.joining(", ", "{", "}")));
                 }
             }
         }

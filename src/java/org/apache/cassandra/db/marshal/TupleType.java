@@ -32,6 +32,7 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.serializers.*;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -79,6 +80,12 @@ public class TupleType extends AbstractType<ByteBuffer>
         return allTypes().stream().anyMatch(f -> f.referencesUserType(name));
     }
 
+    @Override
+    public boolean referencesDuration()
+    {
+        return allTypes().stream().anyMatch(f -> f.referencesDuration());
+    }
+
     public AbstractType<?> type(int i)
     {
         return types.get(i);
@@ -92,6 +99,11 @@ public class TupleType extends AbstractType<ByteBuffer>
     public List<AbstractType<?>> allTypes()
     {
         return types;
+    }
+
+    public boolean isTuple()
+    {
+        return true;
     }
 
     public int compareCustom(ByteBuffer o1, ByteBuffer o2)
@@ -154,7 +166,7 @@ public class TupleType extends AbstractType<ByteBuffer>
             if (!input.hasRemaining())
                 return;
 
-            if (input.remaining() < 4)
+            if (input.remaining() < Integer.BYTES)
                 throw new MarshalException(String.format("Not enough bytes to read size of %dth component", i));
 
             int size = input.getInt();
@@ -188,6 +200,11 @@ public class TupleType extends AbstractType<ByteBuffer>
                 return Arrays.copyOfRange(components, 0, i);
 
             int size = input.getInt();
+
+            if (input.remaining() < size)
+                throw new MarshalException(String.format("Not enough bytes to read %dth component", i));
+
+            // size < 0 means null value
             components[i] = size < 0 ? null : ByteBufferUtil.readBytes(input, size);
         }
 
@@ -319,7 +336,7 @@ public class TupleType extends AbstractType<ByteBuffer>
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
     {
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < types.size(); i++)

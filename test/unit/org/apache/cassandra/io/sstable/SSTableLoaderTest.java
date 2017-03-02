@@ -19,7 +19,6 @@ package org.apache.cassandra.io.sstable;
 
 import java.io.File;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
@@ -32,10 +31,9 @@ import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.cql3.QueryProcessor;
-import org.apache.cassandra.cql3.UntypedResultSet;
+import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.schema.TableMetadataRef;
+import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.partitions.*;
 import org.apache.cassandra.db.marshal.AsciiType;
@@ -109,9 +107,9 @@ public class SSTableLoaderTest
                 addRangeForEndpoint(range, FBUtilities.getBroadcastAddress());
         }
 
-        public CFMetaData getTableMetadata(String tableName)
+        public TableMetadataRef getTableMetadata(String tableName)
         {
-            return Schema.instance.getCFMetaData(keyspace, tableName);
+            return Schema.instance.getTableMetadataRef(keyspace, tableName);
         }
     }
 
@@ -120,13 +118,11 @@ public class SSTableLoaderTest
     {
         File dataDir = new File(tmpdir.getAbsolutePath() + File.separator + KEYSPACE1 + File.separator + CF_STANDARD1);
         assert dataDir.mkdirs();
-        CFMetaData cfmeta = Schema.instance.getCFMetaData(KEYSPACE1, CF_STANDARD1);
+        TableMetadata metadata = Schema.instance.getTableMetadata(KEYSPACE1, CF_STANDARD1);
 
         String schema = "CREATE TABLE %s.%s (key ascii, name ascii, val ascii, val1 ascii, PRIMARY KEY (key, name))";
         String query = "INSERT INTO %s.%s (key, name, val) VALUES (?, ?, ?)";
 
-
-        File outputDir;
         try (CQLSSTableWriter writer = CQLSSTableWriter.builder()
                                                        .inDirectory(dataDir)
                                                        .forTable(String.format(schema, KEYSPACE1, CF_STANDARD1))
@@ -134,22 +130,22 @@ public class SSTableLoaderTest
                                                        .build())
         {
             writer.addRow("key1", "col1", "100");
-            outputDir = writer.getInnermostDirectory();
         }
 
+        ColumnFamilyStore cfs = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD1);
+        cfs.forceBlockingFlush(); // wait for sstables to be on disk else we won't be able to stream them
+
         final CountDownLatch latch = new CountDownLatch(1);
-        SSTableLoader loader = new SSTableLoader(outputDir, new TestClient(), new OutputHandler.SystemOutput(false, false));
+        SSTableLoader loader = new SSTableLoader(dataDir, new TestClient(), new OutputHandler.SystemOutput(false, false));
         loader.stream(Collections.emptySet(), completionStreamListener(latch)).get();
 
-        UntypedResultSet rs = QueryProcessor.executeInternal(String.format("SELECT * FROM %s.%s;", KEYSPACE1, CF_STANDARD1));
+        List<FilteredPartition> partitions = Util.getAll(Util.cmd(cfs).build());
 
-        assertEquals(1, rs.size());
-
-        Iterator<UntypedResultSet.Row> iter = rs.iterator();
-        UntypedResultSet.Row row;
-
-        row = iter.next();
-        assertEquals("key1", row.getString("key"));
+        assertEquals(1, partitions.size());
+        assertEquals("key1", AsciiType.instance.getString(partitions.get(0).partitionKey().getKey()));
+        assertEquals(ByteBufferUtil.bytes("100"), partitions.get(0).getRow(Clustering.make(ByteBufferUtil.bytes("col1")))
+                                                                   .getCell(metadata.getColumn(ByteBufferUtil.bytes("val")))
+                                                                   .value());
 
         // The stream future is signalled when the work is complete but before releasing references. Wait for release
         // before cleanup (CASSANDRA-10118).
@@ -165,9 +161,8 @@ public class SSTableLoaderTest
         //make sure we have no tables...
         assertTrue(dataDir.listFiles().length == 0);
 
-        //Since this is running in the same jvm we need to put it in a tmp keyspace
-        String schema = "CREATE TABLE \"%stmp\".\"%s\" (key ascii, name ascii, val ascii, val1 ascii, PRIMARY KEY (key, name)) with compression = {}";
-        String query = "INSERT INTO \"%stmp\".\"%s\" (key, name, val) VALUES (?, ?, ?)";
+        String schema = "CREATE TABLE %s.%s (key ascii, name ascii, val ascii, val1 ascii, PRIMARY KEY (key, name))";
+        String query = "INSERT INTO %s.%s (key, name, val) VALUES (?, ?, ?)";
 
         CQLSSTableWriter writer = CQLSSTableWriter.builder()
                                                   .inDirectory(dataDir)
@@ -176,7 +171,7 @@ public class SSTableLoaderTest
                                                   .withBufferSizeInMB(1)
                                                   .build();
 
-        int NB_PARTITIONS = 4200; // Enough to write >1MB and get at least one completed sstable before we've closed the writer
+        int NB_PARTITIONS = 5000; // Enough to write >1MB and get at least one completed sstable before we've closed the writer
 
         for (int i = 0; i < NB_PARTITIONS; i++)
         {
@@ -188,11 +183,11 @@ public class SSTableLoaderTest
         cfs.forceBlockingFlush(); // wait for sstables to be on disk else we won't be able to stream them
 
         //make sure we have some tables...
-        assertTrue(writer.getInnermostDirectory().listFiles().length > 0);
+        assertTrue(dataDir.listFiles().length > 0);
 
         final CountDownLatch latch = new CountDownLatch(2);
         //writer is still open so loader should not load anything
-        SSTableLoader loader = new SSTableLoader(writer.getInnermostDirectory(), new TestClient(), new OutputHandler.SystemOutput(false, false), KEYSPACE1);
+        SSTableLoader loader = new SSTableLoader(dataDir, new TestClient(), new OutputHandler.SystemOutput(false, false));
         loader.stream(Collections.emptySet(), completionStreamListener(latch)).get();
 
         List<FilteredPartition> partitions = Util.getAll(Util.cmd(cfs).build());
@@ -202,7 +197,7 @@ public class SSTableLoaderTest
         // now we complete the write and the second loader should load the last sstable as well
         writer.close();
 
-        loader = new SSTableLoader(writer.getInnermostDirectory(), new TestClient(), new OutputHandler.SystemOutput(false, false), KEYSPACE1);
+        loader = new SSTableLoader(dataDir, new TestClient(), new OutputHandler.SystemOutput(false, false));
         loader.stream(Collections.emptySet(), completionStreamListener(latch)).get();
 
         partitions = Util.getAll(Util.cmd(Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD2)).build());

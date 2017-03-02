@@ -24,8 +24,9 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.marshal.*;
+import org.apache.cassandra.db.marshal.CollectionType.Kind;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
@@ -33,6 +34,7 @@ import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.Types;
 import org.apache.cassandra.serializers.CollectionSerializer;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 public interface CQL3Type
@@ -53,12 +55,11 @@ public interface CQL3Type
 
     /**
      * Generates CQL literal from a binary value of this type.
-     *
-     * @param buffer the value to convert to a CQL literal. This value must be
+     *  @param buffer the value to convert to a CQL literal. This value must be
      * serialized with {@code version} of the native protocol.
      * @param version the native protocol version in which {@code buffer} is encoded.
      */
-    public String toCQLLiteral(ByteBuffer buffer, int version);
+    public String toCQLLiteral(ByteBuffer buffer, ProtocolVersion version);
 
     public enum Native implements CQL3Type
     {
@@ -70,6 +71,7 @@ public interface CQL3Type
         DATE        (SimpleDateType.instance),
         DECIMAL     (DecimalType.instance),
         DOUBLE      (DoubleType.instance),
+        DURATION    (DurationType.instance),
         EMPTY       (EmptyType.instance),
         FLOAT       (FloatType.instance),
         INET        (InetAddressType.instance),
@@ -103,7 +105,7 @@ public interface CQL3Type
          * {@link org.apache.cassandra.serializers.TypeSerializer#toString(Object)}
          * {@link org.apache.cassandra.serializers.TypeSerializer#deserialize(ByteBuffer)} implementations.
          */
-        public String toCQLLiteral(ByteBuffer buffer, int version)
+        public String toCQLLiteral(ByteBuffer buffer, ProtocolVersion version)
         {
             return type.getSerializer().toCQLLiteral(buffer);
         }
@@ -134,7 +136,7 @@ public interface CQL3Type
             return type;
         }
 
-        public String toCQLLiteral(ByteBuffer buffer, int version)
+        public String toCQLLiteral(ByteBuffer buffer, ProtocolVersion version)
         {
             // *always* use the 'blob' syntax to express custom types in CQL
             return Native.BLOB.toCQLLiteral(buffer, version);
@@ -182,7 +184,7 @@ public interface CQL3Type
             return true;
         }
 
-        public String toCQLLiteral(ByteBuffer buffer, int version)
+        public String toCQLLiteral(ByteBuffer buffer, ProtocolVersion version)
         {
             if (buffer == null)
                 return "null";
@@ -214,7 +216,7 @@ public interface CQL3Type
             return target.toString();
         }
 
-        private void generateMapCQLLiteral(ByteBuffer buffer, int version, StringBuilder target, int size)
+        private void generateMapCQLLiteral(ByteBuffer buffer, ProtocolVersion version, StringBuilder target, int size)
         {
             CQL3Type keys = ((MapType) type).getKeysType().asCQL3Type();
             CQL3Type values = ((MapType) type).getValuesType().asCQL3Type();
@@ -230,7 +232,7 @@ public interface CQL3Type
             }
         }
 
-        private static void generateSetOrListCQLLiteral(ByteBuffer buffer, int version, StringBuilder target, int size, CQL3Type elements)
+        private static void generateSetOrListCQLLiteral(ByteBuffer buffer, ProtocolVersion version, StringBuilder target, int size, CQL3Type elements)
         {
             for (int i = 0; i < size; i++)
             {
@@ -314,7 +316,7 @@ public interface CQL3Type
             return type;
         }
 
-        public String toCQLLiteral(ByteBuffer buffer, int version)
+        public String toCQLLiteral(ByteBuffer buffer, ProtocolVersion version)
         {
             if (buffer == null)
                 return "null";
@@ -402,7 +404,7 @@ public interface CQL3Type
             return type;
         }
 
-        public String toCQLLiteral(ByteBuffer buffer, int version)
+        public String toCQLLiteral(ByteBuffer buffer, ProtocolVersion version)
         {
             if (buffer == null)
                 return "null";
@@ -494,6 +496,11 @@ public interface CQL3Type
             return true;
         }
 
+        public boolean isDuration()
+        {
+            return false;
+        }
+
         public boolean isCounter()
         {
             return false;
@@ -517,7 +524,7 @@ public interface CQL3Type
 
         public CQL3Type prepare(String keyspace)
         {
-            KeyspaceMetadata ksm = Schema.instance.getKSMetaData(keyspace);
+            KeyspaceMetadata ksm = Schema.instance.getKeyspaceMetadata(keyspace);
             if (ksm == null)
                 throw new ConfigurationException(String.format("Keyspace %s doesn't exist", keyspace));
             return prepare(keyspace, ksm.types);
@@ -595,6 +602,11 @@ public interface CQL3Type
                 return type == Native.COUNTER;
             }
 
+            public boolean isDuration()
+            {
+                return type == Native.DURATION;
+            }
+
             @Override
             public String toString()
             {
@@ -651,15 +663,20 @@ public interface CQL3Type
                 if (!frozen && values.supportsFreezing() && !values.frozen)
                     throwNestedNonFrozenError(values);
 
-                // we represent Thrift supercolumns as maps, internally, and we do allow counters in supercolumns. Thus,
+                // we represent supercolumns as maps, internally, and we do allow counters in supercolumns. Thus,
                 // for internal type parsing (think schema) we have to make an exception and allow counters as (map) values
                 if (values.isCounter() && !isInternal)
                     throw new InvalidRequestException("Counters are not allowed inside collections: " + this);
+
+                if (values.isDuration() && kind == Kind.SET)
+                    throw new InvalidRequestException("Durations are not allowed inside sets: " + this);
 
                 if (keys != null)
                 {
                     if (keys.isCounter())
                         throw new InvalidRequestException("Counters are not allowed inside collections: " + this);
+                    if (keys.isDuration())
+                        throw new InvalidRequestException("Durations are not allowed as map keys: " + this);
                     if (!frozen && keys.supportsFreezing() && !keys.frozen)
                         throwNestedNonFrozenError(keys);
                 }

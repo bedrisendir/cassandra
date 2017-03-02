@@ -18,37 +18,38 @@
 package org.apache.cassandra.io.sstable;
 
 import java.io.File;
-import java.io.FilenameFilter;
+import java.io.FileFilter;
 import java.io.IOException;
 import java.io.Closeable;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.EncodingStats;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
-import org.apache.cassandra.dht.IPartitioner;
+import org.apache.cassandra.db.rows.EncodingStats;
 import org.apache.cassandra.io.sstable.format.SSTableFormat;
+import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.service.ActiveRepairService;
-import org.apache.cassandra.utils.Pair;
 
 /**
  * Base class for the sstable writers used by CQLSSTableWriter.
  */
 abstract class AbstractSSTableSimpleWriter implements Closeable
 {
-    protected final ColumnFamilyStore cfs;
-    protected final IPartitioner partitioner;
-    protected final PartitionColumns columns;
+    protected final File directory;
+    protected final TableMetadataRef metadata;
+    protected final RegularAndStaticColumns columns;
     protected SSTableFormat.Type formatType = SSTableFormat.Type.current();
     protected static AtomicInteger generation = new AtomicInteger(0);
     protected boolean makeRangeAware = false;
 
-    protected AbstractSSTableSimpleWriter(ColumnFamilyStore cfs, IPartitioner partitioner,  PartitionColumns columns)
+    protected AbstractSSTableSimpleWriter(File directory, TableMetadataRef metadata, RegularAndStaticColumns columns)
     {
-        this.cfs = cfs;
-        this.partitioner = partitioner;
+        this.metadata = metadata;
+        this.directory = directory;
         this.columns = columns;
     }
 
@@ -65,17 +66,19 @@ abstract class AbstractSSTableSimpleWriter implements Closeable
 
     protected SSTableTxnWriter createWriter()
     {
-        SerializationHeader header = new SerializationHeader(true, cfs.metadata, columns, EncodingStats.NO_STATS);
+        SerializationHeader header = new SerializationHeader(true, metadata.get(), columns, EncodingStats.NO_STATS);
 
         if (makeRangeAware)
-            return SSTableTxnWriter.createRangeAware(cfs, 0,  ActiveRepairService.UNREPAIRED_SSTABLE, formatType, 0, header);
+            return SSTableTxnWriter.createRangeAware(metadata, 0,  ActiveRepairService.UNREPAIRED_SSTABLE, ActiveRepairService.NO_PENDING_REPAIR, formatType, 0, header);
 
-        return SSTableTxnWriter.create(cfs,
-                                       createDescriptor(cfs.getDirectories().getDirectoryForNewSSTables(), cfs.metadata.ksName, cfs.metadata.cfName, formatType),
+        return SSTableTxnWriter.create(metadata,
+                                       createDescriptor(directory, metadata.keyspace, metadata.name, formatType),
                                        0,
                                        ActiveRepairService.UNREPAIRED_SSTABLE,
+                                       ActiveRepairService.NO_PENDING_REPAIR,
                                        0,
-                                       header);
+                                       header,
+                                       Collections.emptySet());
     }
 
     private static Descriptor createDescriptor(File directory, final String keyspace, final String columnFamily, final SSTableFormat.Type fmt)
@@ -87,12 +90,11 @@ abstract class AbstractSSTableSimpleWriter implements Closeable
     private static int getNextGeneration(File directory, final String columnFamily)
     {
         final Set<Descriptor> existing = new HashSet<>();
-        directory.list(new FilenameFilter()
+        directory.listFiles(new FileFilter()
         {
-            public boolean accept(File dir, String name)
+            public boolean accept(File file)
             {
-                Pair<Descriptor, Component> p = SSTable.tryComponentFromFilename(dir, name);
-                Descriptor desc = p == null ? null : p.left;
+                Descriptor desc = SSTable.tryDescriptorFromFilename(file);
                 if (desc == null)
                     return false;
 
@@ -115,7 +117,7 @@ abstract class AbstractSSTableSimpleWriter implements Closeable
 
     PartitionUpdate getUpdateFor(ByteBuffer key) throws IOException
     {
-        return getUpdateFor(partitioner.decorateKey(key));
+        return getUpdateFor(metadata.get().partitioner.decorateKey(key));
     }
 
     /**

@@ -29,10 +29,9 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 
 import junit.framework.Assert;
-import org.apache.cassandra.MockSchema;
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.schema.TableMetadataRef;
+import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SerializationHeader;
@@ -65,8 +64,6 @@ public class RealTransactionsTest extends SchemaLoader
     @BeforeClass
     public static void setUp()
     {
-        MockSchema.cleanup();
-
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE,
                                     KeyspaceParams.simple(1),
@@ -131,10 +128,12 @@ public class RealTransactionsTest extends SchemaLoader
     {
         cfs.truncateBlocking();
 
+        String schema = "CREATE TABLE \"%s\".\"%s\" (key ascii, name ascii, val ascii, val1 ascii, PRIMARY KEY (key, name))";
         String query = "INSERT INTO \"%s\".\"%s\" (key, name, val) VALUES (?, ?, ?)";
 
         try (CQLSSTableWriter writer = CQLSSTableWriter.builder()
-                                                       .withCfs(cfs)
+                                                       .inDirectory(cfs.getDirectories().getDirectoryForNewSSTables())
+                                                       .forTable(String.format(schema, cfs.keyspace.getName(), cfs.name))
                                                        .using(String.format(query, cfs.keyspace.getName(), cfs.name))
                                                        .build())
         {
@@ -158,14 +157,15 @@ public class RealTransactionsTest extends SchemaLoader
             {
                 long lastCheckObsoletion = System.nanoTime();
                 File directory = txn.originals().iterator().next().descriptor.directory;
-                Descriptor desc = Descriptor.fromFilename(cfs.getSSTablePath(directory));
-                CFMetaData metadata = Schema.instance.getCFMetaData(desc);
+                Descriptor desc = cfs.newSSTableDescriptor(directory);
+                TableMetadataRef metadata = Schema.instance.getTableMetadataRef(desc);
                 rewriter.switchWriter(SSTableWriter.create(metadata,
                                                            desc,
                                                            0,
                                                            0,
+                                                           null,
                                                            0,
-                                                           SerializationHeader.make(cfs.metadata, txn.originals()),
+                                                           SerializationHeader.make(cfs.metadata(), txn.originals()),
                                                            cfs.indexManager.listIndexes(),
                                                            txn));
                 while (ci.hasNext())

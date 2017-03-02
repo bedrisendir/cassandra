@@ -23,7 +23,6 @@ import java.util.Arrays;
 import org.junit.Test;
 
 import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -176,7 +175,7 @@ public class CassandraVersionTest
         next = new CassandraVersion("3.2");
         assertTrue(prev.compareTo(next) < 0);
     }
-    
+
     private static void assertThrows(String str)
     {
         try
@@ -186,7 +185,7 @@ public class CassandraVersionTest
         }
         catch (IllegalArgumentException e) {}
     }
-    
+
     @Test
     public void testParseIdentifiersPositive() throws Throwable
     {
@@ -194,7 +193,7 @@ public class CassandraVersionTest
         String[] expected = {"a", "b", "cde", "f_g"};
         assertArrayEquals(expected, result);
     }
-    
+
     @Test
     public void testParseIdentifiersNegative() throws Throwable
     {
@@ -202,7 +201,7 @@ public class CassandraVersionTest
         try
         {
             parseIdentifiers(version, "+a. .b");
-            
+
         }
         catch (IllegalArgumentException e)
         {
@@ -215,13 +214,13 @@ public class CassandraVersionTest
         Class[] args = {String.class, String.class};
         for (Method m: CassandraVersion.class.getDeclaredMethods())
         {
-            if (name.equals(m.getName()) && 
+            if (name.equals(m.getName()) &&
                     Arrays.equals(args, m.getParameterTypes()))
             {
                 m.setAccessible(true);
-                try 
+                try
                 {
-                return (String[]) m.invoke(null, version, str); 
+                return (String[]) m.invoke(null, version, str);
                 } catch (InvocationTargetException e){
                     throw e.getTargetException();
                 }

@@ -102,11 +102,14 @@ public interface ColumnFamilyStoreMBean
      */
     public Map<String,String> getCompressionParameters();
 
+    public String getCompressionParametersJson();
+
     /**
-     * Set the compression parameters
+     * Set the compression parameters locally for this node
      * @param opts map of string names to values
      */
     public void setCompressionParameters(Map<String,String> opts);
+    public void setCompressionParametersJson(String options);
 
     /**
      * Set new crc check chance
@@ -155,6 +158,11 @@ public interface ColumnFamilyStoreMBean
      *         array index corresponds to level(int[0] is for level 0, ...).
      */
     public int[] getSSTableCountPerLevel();
+
+    /**
+     * @return sstable fanout size for level compaction strategy.
+     */
+    public int getLevelFanoutSize();
 
     /**
      * Get the ratio of droppable tombstones to real columns (and non-droppable tombstones)

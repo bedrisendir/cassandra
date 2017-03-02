@@ -27,20 +27,19 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Files;
 
-import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
-import org.apache.cassandra.auth.AuthConfig;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.cql3.functions.UDHelper;
-import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.*;
+import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.schema.TableMetadataRef;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.*;
 import com.datastax.driver.core.DataType;
@@ -50,6 +49,7 @@ import com.datastax.driver.core.UDTValue;
 import com.datastax.driver.core.UserType;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
 public class CQLSSTableWriterTest
@@ -97,7 +97,7 @@ public class CQLSSTableWriterTest
 
             writer.close();
 
-            loadSSTables(writer.getInnermostDirectory(), KS);
+            loadSSTables(dataDir, KS);
 
             UntypedResultSet rs = QueryProcessor.executeInternal("SELECT * FROM cql_keyspace.table1;");
             assertEquals(4, rs.size());
@@ -128,7 +128,7 @@ public class CQLSSTableWriterTest
         }
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void testForbidCounterUpdates() throws Exception
     {
         String KS = "cql_keyspace";
@@ -144,10 +144,18 @@ public class CQLSSTableWriterTest
                         "  PRIMARY KEY (my_id)" +
                         ")";
         String insert = String.format("UPDATE cql_keyspace.counter1 SET my_counter = my_counter - ? WHERE my_id = ?");
-        CQLSSTableWriter.builder().inDirectory(dataDir)
-                        .forTable(schema)
-                        .withPartitioner(Murmur3Partitioner.instance)
-                        .using(insert).build();
+        try
+        {
+            CQLSSTableWriter.builder().inDirectory(dataDir)
+                            .forTable(schema)
+                            .withPartitioner(Murmur3Partitioner.instance)
+                            .using(insert).build();
+            fail("Counter update statements should not be supported");
+        }
+        catch (IllegalArgumentException e)
+        {
+            assertEquals(e.getMessage(), "Counter update statements are not supported");
+        }
     }
 
     @Test
@@ -169,8 +177,8 @@ public class CQLSSTableWriterTest
         String insert = "INSERT INTO ks.test (k, v) VALUES (?, ?)";
         CQLSSTableWriter writer = CQLSSTableWriter.builder()
                                                   .inDirectory(dataDir)
-                                                  .forTable(schema)
                                                   .using(insert)
+                                                  .forTable(schema)
                                                   .withBufferSizeInMB(1)
                                                   .build();
 
@@ -187,7 +195,7 @@ public class CQLSSTableWriterTest
                 return name.endsWith("-Data.db");
             }
         };
-        assert writer.getInnermostDirectory().list(filterDataFiles).length > 1 : Arrays.toString(writer.getInnermostDirectory().list(filterDataFiles));
+        assert dataDir.list(filterDataFiles).length > 1 : Arrays.toString(dataDir.list(filterDataFiles));
     }
 
 
@@ -221,22 +229,28 @@ public class CQLSSTableWriterTest
     private static final int NUMBER_WRITES_IN_RUNNABLE = 10;
     private class WriterThread extends Thread
     {
+        private final File dataDir;
         private final int id;
-        private final ColumnFamilyStore cfs;
         public volatile Exception exception;
 
-        public WriterThread(ColumnFamilyStore cfs, int id)
+        public WriterThread(File dataDir, int id)
         {
-            this.cfs = cfs;
+            this.dataDir = dataDir;
             this.id = id;
         }
 
         @Override
         public void run()
         {
+            String schema = "CREATE TABLE cql_keyspace2.table2 ("
+                    + "  k int,"
+                    + "  v int,"
+                    + "  PRIMARY KEY (k, v)"
+                    + ")";
             String insert = "INSERT INTO cql_keyspace2.table2 (k, v) VALUES (?, ?)";
             CQLSSTableWriter writer = CQLSSTableWriter.builder()
-                    .withCfs(cfs)
+                    .inDirectory(dataDir)
+                    .forTable(schema)
                     .using(insert).build();
 
             try
@@ -264,17 +278,10 @@ public class CQLSSTableWriterTest
         File dataDir = new File(tempdir.getAbsolutePath() + File.separator + KS + File.separator + TABLE);
         assert dataDir.mkdirs();
 
-        String schema = "CREATE TABLE cql_keyspace2.table2 ("
-                        + "  k int,"
-                        + "  v int,"
-                        + "  PRIMARY KEY (k, v)"
-                        + ")";
-        ColumnFamilyStore cfs = CQLSSTableWriter.Builder.createOfflineTable(schema, Collections.singletonList(dataDir));
-
         WriterThread[] threads = new WriterThread[5];
         for (int i = 0; i < threads.length; i++)
         {
-            WriterThread thread = new WriterThread(cfs, i);
+            WriterThread thread = new WriterThread(dataDir, i);
             threads[i] = thread;
             thread.start();
         }
@@ -289,7 +296,7 @@ public class CQLSSTableWriterTest
             }
         }
 
-        loadSSTables(cfs.getDirectories().getDirectoryForNewSSTables(), KS);
+        loadSSTables(dataDir, KS);
 
         UntypedResultSet rs = QueryProcessor.executeInternal("SELECT * FROM cql_keyspace2.table2;");
         assertEquals(threads.length * NUMBER_WRITES_IN_RUNNABLE, rs.size());
@@ -341,7 +348,7 @@ public class CQLSSTableWriterTest
         }
 
         writer.close();
-        loadSSTables(writer.getInnermostDirectory(), KS);
+        loadSSTables(dataDir, KS);
 
         UntypedResultSet resultSet = QueryProcessor.executeInternal("SELECT * FROM " + KS + "." + TABLE);
         TypeCodec collectionCodec = UDHelper.codecFor(DataType.CollectionType.frozenList(tuple2Type));
@@ -412,7 +419,7 @@ public class CQLSSTableWriterTest
         }
 
         writer.close();
-        loadSSTables(writer.getInnermostDirectory(), KS);
+        loadSSTables(dataDir, KS);
 
         UntypedResultSet resultSet = QueryProcessor.executeInternal("SELECT * FROM " + KS + "." + TABLE);
 
@@ -503,7 +510,7 @@ public class CQLSSTableWriterTest
         writer.addRow(5, 5, 5, "5");
 
         writer.close();
-        loadSSTables(writer.getInnermostDirectory(), KS);
+        loadSSTables(dataDir, KS);
 
         UntypedResultSet resultSet = QueryProcessor.executeInternal("SELECT * FROM " + KS + "." + TABLE);
         Iterator<UntypedResultSet.Row> iter = resultSet.iterator();
@@ -535,6 +542,55 @@ public class CQLSSTableWriterTest
         assertEquals("5", r5.getString("v"));
     }
 
+    @Test
+    public void testUpdateSatement() throws Exception
+    {
+        final String KS = "cql_keyspace6";
+        final String TABLE = "table6";
+
+        final String schema = "CREATE TABLE " + KS + "." + TABLE + " ("
+                              + "  k int,"
+                              + "  c1 int,"
+                              + "  c2 int,"
+                              + "  v text,"
+                              + "  PRIMARY KEY (k, c1, c2)"
+                              + ")";
+
+        File tempdir = Files.createTempDir();
+        File dataDir = new File(tempdir.getAbsolutePath() + File.separator + KS + File.separator + TABLE);
+        assert dataDir.mkdirs();
+
+        CQLSSTableWriter writer = CQLSSTableWriter.builder()
+                                                  .inDirectory(dataDir)
+                                                  .forTable(schema)
+                                                  .using("UPDATE " + KS + "." + TABLE + " SET v = ? " +
+                                                         "WHERE k = ? AND c1 = ? AND c2 = ?")
+                                                  .build();
+
+        writer.addRow("a", 1, 2, 3);
+        writer.addRow("b", 4, 5, 6);
+        writer.addRow(null, 7, 8, 9);
+        writer.addRow(CQLSSTableWriter.UNSET_VALUE, 10, 11, 12);
+        writer.close();
+        loadSSTables(dataDir, KS);
+
+        UntypedResultSet resultSet = QueryProcessor.executeInternal("SELECT * FROM " + KS + "." + TABLE);
+        assertEquals(2, resultSet.size());
+
+        Iterator<UntypedResultSet.Row> iter = resultSet.iterator();
+        UntypedResultSet.Row r1 = iter.next();
+        assertEquals(1, r1.getInt("k"));
+        assertEquals(2, r1.getInt("c1"));
+        assertEquals(3, r1.getInt("c2"));
+        assertEquals("a", r1.getString("v"));
+        UntypedResultSet.Row r2 = iter.next();
+        assertEquals(4, r2.getInt("k"));
+        assertEquals(5, r2.getInt("c1"));
+        assertEquals(6, r2.getInt("c2"));
+        assertEquals("b", r2.getString("v"));
+        assertFalse(iter.hasNext());
+    }
+
     private static void loadSSTables(File dataDir, String ks) throws ExecutionException, InterruptedException
     {
         SSTableLoader loader = new SSTableLoader(dataDir, new SSTableLoader.Client()
@@ -548,9 +604,9 @@ public class CQLSSTableWriterTest
                     addRangeForEndpoint(range, FBUtilities.getBroadcastAddress());
             }
 
-            public CFMetaData getTableMetadata(String cfName)
+            public TableMetadataRef getTableMetadata(String cfName)
             {
-                return Schema.instance.getCFMetaData(keyspace, cfName);
+                return Schema.instance.getTableMetadataRef(keyspace, cfName);
             }
         }, new OutputHandler.SystemOutput(false, false));
 

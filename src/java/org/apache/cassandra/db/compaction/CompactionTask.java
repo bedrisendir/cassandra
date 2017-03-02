@@ -19,6 +19,7 @@ package org.apache.cassandra.db.compaction;
 
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -27,7 +28,6 @@ import java.util.concurrent.TimeUnit;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
-import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.RateLimiter;
 
 import org.apache.cassandra.db.Directories;
@@ -86,12 +86,15 @@ public class CompactionTask extends AbstractCompactionTask
         return transaction.originals().size();
     }
 
-    public boolean reduceScopeForLimitedSpace()
+    public boolean reduceScopeForLimitedSpace(long expectedSize)
     {
         if (partialCompactionsAcceptable() && transaction.originals().size() > 1)
         {
             // Try again w/o the largest one.
-            logger.warn("Insufficient space to compact all requested files {}", StringUtils.join(transaction.originals(), ", "));
+            logger.warn("insufficient space to compact all requested files. {}MB required, {}",
+                        (float) expectedSize / 1024 / 1024,
+                        StringUtils.join(transaction.originals(), ", "));
+
             // Note that we have removed files that are still marked as compacting.
             // This suboptimal but ok since the caller will unmark all the sstables at the end.
             SSTableReader removedSSTable = cfs.getMaxSizeFile(transaction.originals());
@@ -124,9 +127,8 @@ public class CompactionTask extends AbstractCompactionTask
 
         // note that we need to do a rough estimate early if we can fit the compaction on disk - this is pessimistic, but
         // since we might remove sstables from the compaction in checkAvailableDiskSpace it needs to be done here
-        long expectedWriteSize = cfs.getExpectedCompactedFileSize(transaction.originals(), compactionType);
-        long earlySSTableEstimate = Math.max(1, expectedWriteSize / strategy.getMaxSSTableBytes());
-        checkAvailableDiskSpace(earlySSTableEstimate, expectedWriteSize);
+
+        checkAvailableDiskSpace();
 
         // sanity check: all sstables must belong to the same cfs
         assert !Iterables.any(transaction.originals(), new Predicate<SSTableReader>()
@@ -203,8 +205,7 @@ public class CompactionTask extends AbstractCompactionTask
                         long bytesScanned = scanners.getTotalBytesScanned();
 
                         //Rate limit the scanners, and account for compression
-                        int lengthRead = (int) (Ints.checkedCast(bytesScanned - lastBytesScanned) * compressionRatio);
-                        limiter.acquire(lengthRead + 1);
+                        CompactionManager.compactionRateLimiterAcquire(limiter, bytesScanned, lastBytesScanned, compressionRatio);
 
                         lastBytesScanned = bytesScanned;
 
@@ -229,47 +230,50 @@ public class CompactionTask extends AbstractCompactionTask
                 }
             }
 
-            // log a bunch of statistics about the result and save to system table compaction_history
-
-            long durationInNano = System.nanoTime() - start;
-            long dTime = TimeUnit.NANOSECONDS.toMillis(durationInNano);
-            long startsize = inputSizeBytes;
-            long endsize = SSTableReader.getTotalBytes(newSStables);
-            double ratio = (double) endsize / (double) startsize;
-
-            StringBuilder newSSTableNames = new StringBuilder();
-            for (SSTableReader reader : newSStables)
-                newSSTableNames.append(reader.descriptor.baseFilename()).append(",");
-
-            long totalSourceRows = 0;
-            for (int i = 0; i < mergedRowCounts.length; i++)
-                totalSourceRows += mergedRowCounts[i] * (i + 1);
-
-            String mergeSummary = updateCompactionHistory(cfs.keyspace.getName(), cfs.getColumnFamilyName(), mergedRowCounts, startsize, endsize);
-            logger.debug(String.format("Compacted (%s) %d sstables to [%s] to level=%d.  %s to %s (~%d%% of original) in %,dms.  Read Throughput = %s, Write Throughput = %s, Row Throughput = ~%,d/s.  %,d total partitions merged to %,d.  Partition merge counts were {%s}",
-                                      taskId,
-                                      transaction.originals().size(),
-                                      newSSTableNames.toString(),
-                                      getLevel(),
-                                      FBUtilities.prettyPrintMemory(startsize),
-                                      FBUtilities.prettyPrintMemory(endsize),
-                                      (int) (ratio * 100),
-                                      dTime,
-                                      FBUtilities.prettyPrintMemoryPerSecond(startsize, durationInNano),
-                                      FBUtilities.prettyPrintMemoryPerSecond(endsize, durationInNano),
-                                      (int) totalSourceCQLRows / (TimeUnit.NANOSECONDS.toSeconds(durationInNano) + 1),
-                                      totalSourceRows,
-                                      totalKeysWritten,
-                                      mergeSummary));
-            logger.trace(String.format("CF Total Bytes Compacted: %s", FBUtilities.prettyPrintMemory(CompactionTask.addToTotalBytesCompacted(endsize))));
-            logger.trace("Actual #keys: {}, Estimated #keys:{}, Err%: {}", totalKeysWritten, estimatedKeys, ((double)(totalKeysWritten - estimatedKeys)/totalKeysWritten));
-            cfs.getCompactionStrategyManager().compactionLogger.compaction(startTime, transaction.originals(), System.currentTimeMillis(), newSStables);
-
-            // update the metrics
-            cfs.metric.compactionBytesWritten.inc(endsize);
-
             if (transaction.isOffline())
+            {
                 Refs.release(Refs.selfRefs(newSStables));
+            }
+            else
+            {
+                // log a bunch of statistics about the result and save to system table compaction_history
+
+                long durationInNano = System.nanoTime() - start;
+                long dTime = TimeUnit.NANOSECONDS.toMillis(durationInNano);
+                long startsize = inputSizeBytes;
+                long endsize = SSTableReader.getTotalBytes(newSStables);
+                double ratio = (double) endsize / (double) startsize;
+
+                StringBuilder newSSTableNames = new StringBuilder();
+                for (SSTableReader reader : newSStables)
+                    newSSTableNames.append(reader.descriptor.baseFilename()).append(",");
+                long totalSourceRows = 0;
+                for (int i = 0; i < mergedRowCounts.length; i++)
+                    totalSourceRows += mergedRowCounts[i] * (i + 1);
+
+                String mergeSummary = updateCompactionHistory(cfs.keyspace.getName(), cfs.getTableName(), mergedRowCounts, startsize, endsize);
+                logger.debug(String.format("Compacted (%s) %d sstables to [%s] to level=%d.  %s to %s (~%d%% of original) in %,dms.  Read Throughput = %s, Write Throughput = %s, Row Throughput = ~%,d/s.  %,d total partitions merged to %,d.  Partition merge counts were {%s}",
+                                           taskId,
+                                           transaction.originals().size(),
+                                           newSSTableNames.toString(),
+                                           getLevel(),
+                                           FBUtilities.prettyPrintMemory(startsize),
+                                           FBUtilities.prettyPrintMemory(endsize),
+                                           (int) (ratio * 100),
+                                           dTime,
+                                           FBUtilities.prettyPrintMemoryPerSecond(startsize, durationInNano),
+                                           FBUtilities.prettyPrintMemoryPerSecond(endsize, durationInNano),
+                                           (int) totalSourceCQLRows / (TimeUnit.NANOSECONDS.toSeconds(durationInNano) + 1),
+                                           totalSourceRows,
+                                           totalKeysWritten,
+                                           mergeSummary));
+                logger.trace("CF Total Bytes Compacted: {}", FBUtilities.prettyPrintMemory(CompactionTask.addToTotalBytesCompacted(endsize)));
+                logger.trace("Actual #keys: {}, Estimated #keys:{}, Err%: {}", totalKeysWritten, estimatedKeys, ((double)(totalKeysWritten - estimatedKeys)/totalKeysWritten));
+                cfs.getCompactionStrategyManager().compactionLogger.compaction(startTime, transaction.originals(), System.currentTimeMillis(), newSStables);
+
+                // update the metrics
+                cfs.metric.compactionBytesWritten.inc(endsize);
+            }
         }
     }
 
@@ -315,7 +319,28 @@ public class CompactionTask extends AbstractCompactionTask
         return minRepairedAt;
     }
 
-    protected void checkAvailableDiskSpace(long estimatedSSTables, long expectedWriteSize)
+    public static UUID getPendingRepair(Set<SSTableReader> sstables)
+    {
+        if (sstables.isEmpty())
+        {
+            return ActiveRepairService.NO_PENDING_REPAIR;
+        }
+        Set<UUID> ids = new HashSet<>();
+        for (SSTableReader sstable: sstables)
+            ids.add(sstable.getSSTableMetadata().pendingRepair);
+
+        if (ids.size() != 1)
+            throw new RuntimeException(String.format("Attempting to compact pending repair sstables with sstables from other repair, or sstables not pending repair: %s", ids));
+
+        return ids.iterator().next();
+    }
+
+    /*
+    Checks if we have enough disk space to execute the compaction.  Drops the largest sstable out of the Task until
+    there's enough space (in theory) to handle the compaction.  Does not take into account space that will be taken by
+    other compactions.
+     */
+    protected void checkAvailableDiskSpace()
     {
         if(!cfs.isCompactionDiskSpaceCheckEnabled() && compactionType == OperationType.COMPACTION)
         {
@@ -323,10 +348,38 @@ public class CompactionTask extends AbstractCompactionTask
             return;
         }
 
-        while (!getDirectories().hasAvailableDiskSpace(estimatedSSTables, expectedWriteSize))
+        CompactionStrategyManager strategy = cfs.getCompactionStrategyManager();
+        int sstablesRemoved = 0;
+        while(true)
         {
-            if (!reduceScopeForLimitedSpace())
-                throw new RuntimeException(String.format("Not enough space for compaction, estimated sstables = %d, expected write size = %d", estimatedSSTables, expectedWriteSize));
+            long expectedWriteSize = cfs.getExpectedCompactedFileSize(transaction.originals(), compactionType);
+            long estimatedSSTables = Math.max(1, expectedWriteSize / strategy.getMaxSSTableBytes());
+
+            if(cfs.getDirectories().hasAvailableDiskSpace(estimatedSSTables, expectedWriteSize))
+            {
+                // we're ok now on space so now we track the failures, if any
+                if(sstablesRemoved > 0)
+                {
+                    CompactionManager.instance.incrementCompactionsReduced();
+                    CompactionManager.instance.incrementSstablesDropppedFromCompactions(sstablesRemoved);
+                }
+
+                break;
+            }
+
+            if (!reduceScopeForLimitedSpace(expectedWriteSize))
+            {
+                // we end up here if we can't take any more sstables out of the compaction.
+                // usually means we've run out of disk space
+                String msg = String.format("Not enough space for compaction, estimated sstables = %d, expected write size = %d", estimatedSSTables, expectedWriteSize);
+
+                logger.warn(msg);
+                CompactionManager.instance.incrementAborted();
+                throw new RuntimeException(msg);
+            }
+            sstablesRemoved++;
+            logger.warn("Not enough space for compaction, {}MB estimated.  Reducing scope.",
+                            (float) expectedWriteSize / 1024 / 1024);
         }
     }
 

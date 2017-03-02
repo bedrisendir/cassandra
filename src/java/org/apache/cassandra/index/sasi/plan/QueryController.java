@@ -17,18 +17,20 @@
  */
 package org.apache.cassandra.index.sasi.plan;
 
-import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 import com.google.common.collect.Sets;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.filter.*;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DataRange;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.PartitionRangeReadCommand;
+import org.apache.cassandra.db.ReadExecutionController;
+import org.apache.cassandra.db.SinglePartitionReadCommand;
+import org.apache.cassandra.db.filter.DataLimits;
+import org.apache.cassandra.db.filter.RowFilter;
+import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.index.Index;
 import org.apache.cassandra.index.sasi.SASIIndex;
@@ -42,15 +44,13 @@ import org.apache.cassandra.index.sasi.plan.Operation.OperationType;
 import org.apache.cassandra.index.sasi.utils.RangeIntersectionIterator;
 import org.apache.cassandra.index.sasi.utils.RangeIterator;
 import org.apache.cassandra.index.sasi.utils.RangeUnionIterator;
-import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.utils.*;
+import org.apache.cassandra.schema.TableMetadata;
+import org.apache.cassandra.utils.Pair;
 
 public class QueryController
 {
-    private static final Logger logger = LoggerFactory.getLogger(QueryController.class);
-
     private final long executionQuota;
     private final long executionStart;
 
@@ -68,12 +68,7 @@ public class QueryController
         this.executionStart = System.nanoTime();
     }
 
-    public boolean isForThrift()
-    {
-        return command.isForThrift();
-    }
-
-    public CFMetaData metadata()
+    public TableMetadata metadata()
     {
         return command.metadata();
     }
@@ -90,7 +85,7 @@ public class QueryController
 
     public AbstractType<?> getKeyValidator()
     {
-        return cfs.metadata.getKeyValidator();
+        return cfs.metadata().partitionKeyType;
     }
 
     public ColumnIndex getIndex(RowFilter.Expression expression)
@@ -99,26 +94,21 @@ public class QueryController
         return index.isPresent() ? ((SASIIndex) index.get()).getIndex() : null;
     }
 
-    public UnfilteredRowIterator getPartition(DecoratedKey key, NavigableSet<Clustering> clusterings, ReadExecutionController executionController)
+
+    public UnfilteredRowIterator getPartition(DecoratedKey key, ReadExecutionController executionController)
     {
         if (key == null)
             throw new NullPointerException();
-
         try
         {
-            ClusteringIndexFilter filter;
-            if (clusterings == null)
-                filter = new ClusteringIndexSliceFilter(Slices.ALL, false);
-            else
-                filter = new ClusteringIndexNamesFilter(clusterings, false);
-
-            SinglePartitionReadCommand partition = SinglePartitionReadCommand.create(cfs.metadata,
+            SinglePartitionReadCommand partition = SinglePartitionReadCommand.create(cfs.metadata(),
                                                                                      command.nowInSec(),
                                                                                      command.columnFilter(),
-                                                                                     command.rowFilter(),
+                                                                                     command.rowFilter().withoutExpressions(),
                                                                                      DataLimits.NONE,
                                                                                      key,
-                                                                                     filter);
+                                                                                     command.clusteringIndexFilter(key));
+
             return partition.queryMemtableAndDisk(cfs, executionController);
         }
         finally
@@ -144,24 +134,20 @@ public class QueryController
 
         RangeIterator.Builder<Long, Token> builder = op == OperationType.OR
                                                 ? RangeUnionIterator.<Long, Token>builder()
-                                                : RangeIntersectionIterator.<Long, org.apache.cassandra.index.sasi.disk.Token>builder();
+                                                : RangeIntersectionIterator.<Long, Token>builder();
 
         List<RangeIterator<Long, Token>> perIndexUnions = new ArrayList<>();
 
         for (Map.Entry<Expression, Set<SSTableIndex>> e : getView(op, expressions).entrySet())
         {
-            try (RangeIterator<Long, Token> index = TermIterator.build(e.getKey(), e.getValue()))
-            {
-                if (index == null)
-                    continue;
+            @SuppressWarnings("resource") // RangeIterators are closed by releaseIndexes
+            RangeIterator<Long, Token> index = TermIterator.build(e.getKey(), e.getValue());
 
-                builder.add(index);
-                perIndexUnions.add(index);
-            }
-            catch (IOException ex)
-            {
-                logger.error("Failed to release index: ", ex);
-            }
+            if (index == null)
+                continue;
+
+            builder.add(index);
+            perIndexUnions.add(index);
         }
 
         resources.put(expressions, perIndexUnions);
@@ -249,7 +235,7 @@ public class QueryController
                 continue;
 
             Set<SSTableIndex> indexes = applyScope(view.match(e));
-            if (primaryIndexes.size() > indexes.size())
+            if (expression == null || primaryIndexes.size() > indexes.size())
             {
                 primaryIndexes = indexes;
                 expression = e;

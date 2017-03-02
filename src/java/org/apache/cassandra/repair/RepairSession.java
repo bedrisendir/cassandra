@@ -23,7 +23,6 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.*;
@@ -92,9 +91,7 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
     public final Collection<Range<Token>> ranges;
     public final Set<InetAddress> endpoints;
     public final long repairedAt;
-
-    // number of validations left to be performed
-    private final AtomicInteger validationRemaining;
+    public final boolean isConsistent;
 
     private final AtomicBoolean isFailed = new AtomicBoolean(false);
 
@@ -128,6 +125,7 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
                          RepairParallelism parallelismDegree,
                          Set<InetAddress> endpoints,
                          long repairedAt,
+                         boolean isConsistent,
                          boolean pullRepair,
                          String... cfnames)
     {
@@ -141,7 +139,7 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
         this.ranges = ranges;
         this.endpoints = endpoints;
         this.repairedAt = repairedAt;
-        this.validationRemaining = new AtomicInteger(cfnames.length);
+        this.isConsistent = isConsistent;
         this.pullRepair = pullRepair;
     }
 
@@ -185,14 +183,6 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
         logger.info("[repair #{}] {}", getId(), message);
         Tracing.traceRepair(message);
         task.treesReceived(trees);
-
-        // Unregister from FailureDetector once we've completed synchronizing Merkle trees.
-        // After this point, we rely on tcp_keepalive for individual sockets to notify us when a connection is down.
-        // See CASSANDRA-3569
-        if (validationRemaining.decrementAndGet() == 0)
-        {
-            FailureDetector.instance.unregisterFailureDetectionEventListener(this);
-        }
     }
 
     /**
@@ -211,7 +201,7 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
             return;
         }
 
-        logger.debug(String.format("[repair #%s] Repair completed between %s and %s on %s", getId(), nodes.endpoint1, nodes.endpoint2, desc.columnFamily));
+        logger.debug("[repair #{}] Repair completed between {} and {} on {}", getId(), nodes.endpoint1, nodes.endpoint2, desc.columnFamily);
         task.syncComplete(success);
     }
 
@@ -238,7 +228,7 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
         if (terminated)
             return;
 
-        logger.info(String.format("[repair #%s] new session: will sync %s on range %s for %s.%s", getId(), repairedNodes(), ranges, keyspace, Arrays.toString(cfnames)));
+        logger.info("[repair #{}] new session: will sync {} on range {} for {}.{}", getId(), repairedNodes(), ranges, keyspace, Arrays.toString(cfnames));
         Tracing.traceRepair("Syncing range {}", ranges);
         SystemDistributedKeyspace.startRepairs(getId(), parentRepairSession, keyspace, cfnames, ranges, endpoints);
 
@@ -269,7 +259,7 @@ public class RepairSession extends AbstractFuture<RepairSessionResult> implement
         List<ListenableFuture<RepairResult>> jobs = new ArrayList<>(cfnames.length);
         for (String cfname : cfnames)
         {
-            RepairJob job = new RepairJob(this, cfname);
+            RepairJob job = new RepairJob(this, cfname, isConsistent);
             executor.execute(job);
             jobs.add(job);
         }

@@ -121,10 +121,9 @@ public class ColumnIndex
         {
             Row staticRow = iterator.staticRow();
 
-            long startPosition = currentPosition();
             UnfilteredSerializer.serializer.serializeStaticRow(staticRow, header, writer, version);
             if (!observers.isEmpty())
-                observers.forEach((o) -> o.nextUnfilteredCluster(staticRow, startPosition));
+                observers.forEach((o) -> o.nextUnfilteredCluster(staticRow));
         }
     }
 
@@ -200,7 +199,7 @@ public class ColumnIndex
             indexSamplesSerializedSize += idxSerializer.serializedSize(cIndexInfo);
             if (indexSamplesSerializedSize + columnIndexCount * TypeSizes.sizeof(0) > DatabaseDescriptor.getColumnIndexCacheSize())
             {
-                buffer = useBuffer();
+                buffer = reuseOrAllocateBuffer();
                 for (IndexInfo indexSample : indexSamples)
                 {
                     idxSerializer.serialize(indexSample, buffer);
@@ -220,12 +219,14 @@ public class ColumnIndex
         firstClustering = null;
     }
 
-    private DataOutputBuffer useBuffer()
+    private DataOutputBuffer reuseOrAllocateBuffer()
     {
-        if (reusableBuffer != null) 
-        {
-            buffer = reusableBuffer;
+        // Check whether a reusable DataOutputBuffer already exists for this
+        // ColumnIndex instance and return it.
+        if (reusableBuffer != null) {
+            DataOutputBuffer buffer = reusableBuffer;
             buffer.clear();
+            return buffer;
         }
         // don't use the standard RECYCLER as that only recycles up to 1MB and requires proper cleanup
         return new DataOutputBuffer(DatabaseDescriptor.getColumnIndexCacheSize() * 2);
@@ -233,7 +234,6 @@ public class ColumnIndex
 
     private void add(Unfiltered unfiltered) throws IOException
     {
-        final long origPos = writer.position();
         long pos = currentPosition();
 
         if (firstClustering == null)
@@ -247,7 +247,7 @@ public class ColumnIndex
 
         // notify observers about each new row
         if (!observers.isEmpty())
-            observers.forEach((o) -> o.nextUnfilteredCluster(unfiltered, origPos));
+            observers.forEach((o) -> o.nextUnfilteredCluster(unfiltered));
 
         lastClustering = unfiltered.clustering();
         previousRowStart = pos;

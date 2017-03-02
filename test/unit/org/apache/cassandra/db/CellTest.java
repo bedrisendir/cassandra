@@ -27,18 +27,21 @@ import junit.framework.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.FieldIdentifier;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.SchemaLoader;
+import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
+
+import static java.util.Arrays.*;
 
 public class CellTest
 {
@@ -51,13 +54,14 @@ public class CellTest
     private static final String CF_STANDARD1 = "Standard1";
     private static final String CF_COLLECTION = "Collection1";
 
-    private static final CFMetaData cfm = SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD1);
-    private static final CFMetaData cfm2 = CFMetaData.Builder.create(KEYSPACE1, CF_COLLECTION)
-                                                             .addPartitionKey("k", IntegerType.instance)
-                                                             .addClusteringColumn("c", IntegerType.instance)
-                                                             .addRegularColumn("v", IntegerType.instance)
-                                                             .addRegularColumn("m", MapType.getInstance(IntegerType.instance, IntegerType.instance, true))
-                                                             .build();
+    private static final TableMetadata cfm = SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD1).build();
+    private static final TableMetadata cfm2 =
+        TableMetadata.builder(KEYSPACE1, CF_COLLECTION)
+                     .addPartitionKeyColumn("k", IntegerType.instance)
+                     .addClusteringColumn("c", IntegerType.instance)
+                     .addRegularColumn("v", IntegerType.instance)
+                     .addRegularColumn("m", MapType.getInstance(IntegerType.instance, IntegerType.instance, true))
+                     .build();
 
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
@@ -66,14 +70,14 @@ public class CellTest
         SchemaLoader.createKeyspace(KEYSPACE1, KeyspaceParams.simple(1), cfm, cfm2);
     }
 
-    private static ColumnDefinition fakeColumn(String name, AbstractType<?> type)
+    private static ColumnMetadata fakeColumn(String name, AbstractType<?> type)
     {
-        return new ColumnDefinition("fakeKs",
-                                    "fakeTable",
-                                    ColumnIdentifier.getInterned(name, false),
-                                    type,
-                                    ColumnDefinition.NO_POSITION,
-                                    ColumnDefinition.Kind.REGULAR);
+        return new ColumnMetadata("fakeKs",
+                                  "fakeTable",
+                                  ColumnIdentifier.getInterned(name, false),
+                                  type,
+                                  ColumnMetadata.NO_POSITION,
+                                  ColumnMetadata.Kind.REGULAR);
     }
 
     @Test
@@ -127,7 +131,7 @@ public class CellTest
     @Test
     public void testValidate()
     {
-        ColumnDefinition c;
+        ColumnMetadata c;
 
         // Valid cells
         c = fakeColumn("c", Int32Type.instance);
@@ -145,19 +149,88 @@ public class CellTest
         // But this should be valid even though the underlying value is an empty BB (catches bug #11618)
         assertValid(BufferCell.tombstone(c, 0, 4));
         // And of course, this should be valid with a proper value
-        assertValid(BufferCell.live(c, 0, ByteBufferUtil.bytes((short)4)));
+        assertValid(BufferCell.live(c, 0, bbs(4)));
 
         // Invalid ttl
-        assertInvalid(BufferCell.expiring(c, 0, -4, 4, ByteBufferUtil.bytes(4)));
+        assertInvalid(BufferCell.expiring(c, 0, -4, 4, bbs(4)));
         // Invalid local deletion times
-        assertInvalid(BufferCell.expiring(c, 0, 4, -4, ByteBufferUtil.bytes(4)));
-        assertInvalid(BufferCell.expiring(c, 0, 4, Cell.NO_DELETION_TIME, ByteBufferUtil.bytes(4)));
+        assertInvalid(BufferCell.expiring(c, 0, 4, -5, bbs(4)));
+        assertInvalid(BufferCell.expiring(c, 0, 4, Cell.NO_DELETION_TIME, bbs(4)));
 
         c = fakeColumn("c", MapType.getInstance(Int32Type.instance, Int32Type.instance, true));
         // Valid cell path
         assertValid(BufferCell.live(c, 0, ByteBufferUtil.bytes(4), CellPath.create(ByteBufferUtil.bytes(4))));
         // Invalid cell path (int values should be 0 or 4 bytes)
         assertInvalid(BufferCell.live(c, 0, ByteBufferUtil.bytes(4), CellPath.create(ByteBufferUtil.bytes((long)4))));
+    }
+
+    @Test
+    public void testValidateNonFrozenUDT()
+    {
+        FieldIdentifier f1 = field("f1");  // has field position 0
+        FieldIdentifier f2 = field("f2");  // has field position 1
+        UserType udt = new UserType("ks",
+                                    bb("myType"),
+                                    asList(f1, f2),
+                                    asList(Int32Type.instance, UTF8Type.instance),
+                                    true);
+        ColumnMetadata c;
+
+        // Valid cells
+        c = fakeColumn("c", udt);
+        assertValid(BufferCell.live(c, 0, bb(1), CellPath.create(bbs(0))));
+        assertValid(BufferCell.live(c, 0, bb("foo"), CellPath.create(bbs(1))));
+        assertValid(BufferCell.expiring(c, 0, 4, 4, bb(1), CellPath.create(bbs(0))));
+        assertValid(BufferCell.expiring(c, 0, 4, 4, bb("foo"), CellPath.create(bbs(1))));
+        assertValid(BufferCell.tombstone(c, 0, 4, CellPath.create(bbs(0))));
+
+        // Invalid value (text in an int field)
+        assertInvalid(BufferCell.live(c, 0, bb("foo"), CellPath.create(bbs(0))));
+
+        // Invalid ttl
+        assertInvalid(BufferCell.expiring(c, 0, -4, 4, bb(1), CellPath.create(bbs(0))));
+        // Invalid local deletion times
+        assertInvalid(BufferCell.expiring(c, 0, 4, -5, bb(1), CellPath.create(bbs(0))));
+        assertInvalid(BufferCell.expiring(c, 0, 4, Cell.NO_DELETION_TIME, bb(1), CellPath.create(bbs(0))));
+
+        // Invalid cell path (int values should be 0 or 2 bytes)
+        assertInvalid(BufferCell.live(c, 0, bb(1), CellPath.create(ByteBufferUtil.bytes((long)4))));
+    }
+
+    @Test
+    public void testValidateFrozenUDT()
+    {
+        FieldIdentifier f1 = field("f1");  // has field position 0
+        FieldIdentifier f2 = field("f2");  // has field position 1
+        UserType udt = new UserType("ks",
+                                    bb("myType"),
+                                    asList(f1, f2),
+                                    asList(Int32Type.instance, UTF8Type.instance),
+                                    false);
+
+        ColumnMetadata c = fakeColumn("c", udt);
+        ByteBuffer val = udt(bb(1), bb("foo"));
+
+        // Valid cells
+        assertValid(BufferCell.live(c, 0, val));
+        assertValid(BufferCell.live(c, 0, val));
+        assertValid(BufferCell.expiring(c, 0, 4, 4, val));
+        assertValid(BufferCell.expiring(c, 0, 4, 4, val));
+        assertValid(BufferCell.tombstone(c, 0, 4));
+        // fewer values than types is accepted
+        assertValid(BufferCell.live(c, 0, udt(bb(1))));
+
+        // Invalid values
+        // invalid types
+        assertInvalid(BufferCell.live(c, 0, udt(bb("foo"), bb(1))));
+        // too many types
+        assertInvalid(BufferCell.live(c, 0, udt(bb(1), bb("foo"), bb("bar"))));
+
+        // Invalid ttl
+        assertInvalid(BufferCell.expiring(c, 0, -4, 4, val));
+        // Invalid local deletion times
+        assertInvalid(BufferCell.expiring(c, 0, 4, -5, val));
+        assertInvalid(BufferCell.expiring(c, 0, 4, Cell.NO_DELETION_TIME, val));
     }
 
     @Test
@@ -183,10 +256,30 @@ public class CellTest
         return ByteBufferUtil.bytes(i);
     }
 
+    private static ByteBuffer bbs(int s)
+    {
+        return ByteBufferUtil.bytes((short) s);
+    }
+
+    private static ByteBuffer bb(String str)
+    {
+        return UTF8Type.instance.decompose(str);
+    }
+
+    private static ByteBuffer udt(ByteBuffer...buffers)
+    {
+        return UserType.buildValue(buffers);
+    }
+
+    private static FieldIdentifier field(String field)
+    {
+        return FieldIdentifier.forQuoted(field);
+    }
+
     @Test
     public void testComplexCellReconcile()
     {
-        ColumnDefinition m = cfm2.getColumnDefinition(new ColumnIdentifier("m", false));
+        ColumnMetadata m = cfm2.getColumn(new ColumnIdentifier("m", false));
         int now1 = FBUtilities.nowInSeconds();
         long ts1 = now1*1000000;
 
@@ -226,21 +319,21 @@ public class CellTest
         return Cells.reconcile(c2, c1, now) == c2 ? 1 : 0;
     }
 
-    private Cell regular(CFMetaData cfm, String columnName, String value, long timestamp)
+    private Cell regular(TableMetadata cfm, String columnName, String value, long timestamp)
     {
-        ColumnDefinition cdef = cfm.getColumnDefinition(ByteBufferUtil.bytes(columnName));
+        ColumnMetadata cdef = cfm.getColumn(ByteBufferUtil.bytes(columnName));
         return BufferCell.live(cdef, timestamp, ByteBufferUtil.bytes(value));
     }
 
-    private Cell expiring(CFMetaData cfm, String columnName, String value, long timestamp, int localExpirationTime)
+    private Cell expiring(TableMetadata cfm, String columnName, String value, long timestamp, int localExpirationTime)
     {
-        ColumnDefinition cdef = cfm.getColumnDefinition(ByteBufferUtil.bytes(columnName));
+        ColumnMetadata cdef = cfm.getColumn(ByteBufferUtil.bytes(columnName));
         return new BufferCell(cdef, timestamp, 1, localExpirationTime, ByteBufferUtil.bytes(value), null);
     }
 
-    private Cell deleted(CFMetaData cfm, String columnName, int localDeletionTime, long timestamp)
+    private Cell deleted(TableMetadata cfm, String columnName, int localDeletionTime, long timestamp)
     {
-        ColumnDefinition cdef = cfm.getColumnDefinition(ByteBufferUtil.bytes(columnName));
+        ColumnMetadata cdef = cfm.getColumn(ByteBufferUtil.bytes(columnName));
         return BufferCell.tombstone(cdef, timestamp, localDeletionTime);
     }
 }

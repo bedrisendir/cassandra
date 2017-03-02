@@ -31,8 +31,8 @@ import com.google.common.util.concurrent.Uninterruptibles;
 
 import org.apache.cassandra.stress.operations.OpDistributionFactory;
 import org.apache.cassandra.stress.util.JavaDriverClient;
-import org.apache.cassandra.stress.util.MultiPrintStream;
-import org.apache.cassandra.thrift.ConsistencyLevel;
+import org.apache.cassandra.stress.util.ResultLogger;
+import org.apache.cassandra.db.ConsistencyLevel;
 
 // Generic command settings - common to read/write/etc
 public abstract class SettingsCommand implements Serializable
@@ -96,6 +96,9 @@ public abstract class SettingsCommand implements Serializable
                 case 'h':
                     this.durationUnits = TimeUnit.HOURS;
                     break;
+                case 'd':
+                    this.durationUnits = TimeUnit.DAYS;
+                    break;
                 default:
                     throw new IllegalStateException();
             }
@@ -135,7 +138,7 @@ public abstract class SettingsCommand implements Serializable
 
     static class Duration extends Options
     {
-        final OptionSimple duration = new OptionSimple("duration=", "[0-9]+[smh]", null, "Time to run in (in seconds, minutes or hours)", true);
+        final OptionSimple duration = new OptionSimple("duration=", "[0-9]+[smhd]", null, "Time to run in (in seconds, minutes, hours or days)", true);
         @Override
         public List<? extends Option> options()
         {
@@ -173,7 +176,7 @@ public abstract class SettingsCommand implements Serializable
 
     // CLI Utility Methods
 
-    public void printSettings(MultiPrintStream out)
+    public void printSettings(ResultLogger out)
     {
         out.printf("  Type: %s%n", type.toString().toLowerCase());
         out.printf("  Count: %,d%n", count);

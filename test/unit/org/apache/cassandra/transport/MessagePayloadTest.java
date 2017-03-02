@@ -191,7 +191,7 @@ public class MessagePayloadTest extends CQLTester
 
             Assert.assertSame(TestQueryHandler.class, ClientState.getCQLQueryHandler().getClass());
 
-            SimpleClient client = new SimpleClient(nativeAddr.getHostAddress(), nativePort, Server.VERSION_3);
+            SimpleClient client = new SimpleClient(nativeAddr.getHostAddress(), nativePort, ProtocolVersion.V3);
             try
             {
                 client.connect(false);
@@ -290,11 +290,6 @@ public class MessagePayloadTest extends CQLTester
         public ParsedStatement.Prepared getPrepared(MD5Digest id)
         {
             return QueryProcessor.instance.getPrepared(id);
-        }
-
-        public ParsedStatement.Prepared getPreparedForThrift(Integer id)
-        {
-            return QueryProcessor.instance.getPreparedForThrift(id);
         }
 
         public ResultMessage.Prepared prepare(String query,

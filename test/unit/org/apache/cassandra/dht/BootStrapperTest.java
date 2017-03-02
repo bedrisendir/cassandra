@@ -27,6 +27,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import com.google.common.collect.Lists;
 
@@ -40,7 +41,7 @@ import org.junit.runner.RunWith;
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.tokenallocator.TokenAllocation;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -97,7 +98,7 @@ public class BootStrapperTest
         InetAddress myEndpoint = InetAddress.getByName("127.0.0.1");
 
         assertEquals(numOldNodes, tmd.sortedTokens().size());
-        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, "Bootstrap", true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore(), false);
+        RangeStreamer s = new RangeStreamer(tmd, null, myEndpoint, "Bootstrap", true, DatabaseDescriptor.getEndpointSnitch(), new StreamStateStore(), false, 1);
         IFailureDetector mockFailureDetector = new IFailureDetector()
         {
             public boolean isAlive(InetAddress ep)
@@ -178,8 +179,15 @@ public class BootStrapperTest
             int vn = 16;
             String ks = "BootStrapperTestNTSKeyspace" + rackCount + replicas;
             String dc = "1";
+
+            // Register peers with expected DC for NetworkTopologyStrategy.
+            TokenMetadata metadata = StorageService.instance.getTokenMetadata();
+            metadata.clearUnsafe();
+            metadata.updateHostId(UUID.randomUUID(), InetAddress.getByName("127.1.0.99"));
+            metadata.updateHostId(UUID.randomUUID(), InetAddress.getByName("127.15.0.99"));
+
             SchemaLoader.createKeyspace(ks, KeyspaceParams.nts(dc, replicas, "15", 15), SchemaLoader.standardCFMD(ks, "Standard1"));
-            TokenMetadata tm = new TokenMetadata();
+            TokenMetadata tm = StorageService.instance.getTokenMetadata();
             tm.clearUnsafe();
             for (int i = 0; i < rackCount; ++i)
                 generateFakeEndpoints(tm, 10, vn, dc, Integer.toString(i));
@@ -223,11 +231,11 @@ public class BootStrapperTest
 
     private void allocateTokensForNode(int vn, String ks, TokenMetadata tm, InetAddress addr)
     {
-        SummaryStatistics os = TokenAllocation.replicatedOwnershipStats(tm, Keyspace.open(ks).getReplicationStrategy(), addr);
-        Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, ks, vn);
+        SummaryStatistics os = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
+        Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, ks, vn, 0);
         assertEquals(vn, tokens.size());
         tm.updateNormalTokens(tokens, addr);
-        SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm, Keyspace.open(ks).getReplicationStrategy(), addr);
+        SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
         verifyImprovement(os, ns);
     }
 

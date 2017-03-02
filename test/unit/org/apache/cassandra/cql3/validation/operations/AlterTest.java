@@ -17,19 +17,16 @@
  */
 package org.apache.cassandra.cql3.validation.operations;
 
-import org.apache.cassandra.config.SchemaConstants;
+import org.junit.Assert;
+import org.junit.Test;
+
+import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.exceptions.SyntaxException;
 import org.apache.cassandra.schema.SchemaKeyspace;
-import org.apache.cassandra.transport.Server;
-import org.apache.cassandra.utils.ByteBufferUtil;
-
-import org.junit.Assert;
-import org.junit.Test;
 
 import static java.lang.String.format;
 import static org.junit.Assert.assertEquals;
@@ -186,12 +183,12 @@ public class AlterTest extends CQLTester
         ColumnFamilyStore cfs = Keyspace.open(KEYSPACE).getColumnFamilyStore(tableName);
 
         alterTable("ALTER TABLE %s WITH min_index_interval=256 AND max_index_interval=512");
-        assertEquals(256, cfs.metadata.params.minIndexInterval);
-        assertEquals(512, cfs.metadata.params.maxIndexInterval);
+        assertEquals(256, cfs.metadata().params.minIndexInterval);
+        assertEquals(512, cfs.metadata().params.maxIndexInterval);
 
         alterTable("ALTER TABLE %s WITH caching = {}");
-        assertEquals(256, cfs.metadata.params.minIndexInterval);
-        assertEquals(512, cfs.metadata.params.maxIndexInterval);
+        assertEquals(256, cfs.metadata().params.minIndexInterval);
+        assertEquals(512, cfs.metadata().params.maxIndexInterval);
     }
 
     /**
@@ -212,13 +209,13 @@ public class AlterTest extends CQLTester
                    row(ks1, true),
                    row(ks2, false));
 
-        schemaChange("ALTER KEYSPACE " + ks1 + " WITH replication = { 'class' : 'NetworkTopologyStrategy', 'dc1' : 1 } AND durable_writes=False");
+        schemaChange("ALTER KEYSPACE " + ks1 + " WITH replication = { 'class' : 'NetworkTopologyStrategy', '" + DATA_CENTER + "' : 1 } AND durable_writes=False");
         schemaChange("ALTER KEYSPACE " + ks2 + " WITH durable_writes=true");
 
         assertRowsIgnoringOrderAndExtra(execute("SELECT keyspace_name, durable_writes, replication FROM system_schema.keyspaces"),
                    row(KEYSPACE, true, map("class", "org.apache.cassandra.locator.SimpleStrategy", "replication_factor", "1")),
                    row(KEYSPACE_PER_TEST, true, map("class", "org.apache.cassandra.locator.SimpleStrategy", "replication_factor", "1")),
-                   row(ks1, false, map("class", "org.apache.cassandra.locator.NetworkTopologyStrategy", "dc1", "1")),
+                   row(ks1, false, map("class", "org.apache.cassandra.locator.NetworkTopologyStrategy", DATA_CENTER, "1")),
                    row(ks2, true, map("class", "org.apache.cassandra.locator.SimpleStrategy", "replication_factor", "1")));
 
         execute("USE " + ks1);
@@ -230,6 +227,49 @@ public class AlterTest extends CQLTester
                    row("cf1", map("class", "org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy",
                                   "min_threshold", "7",
                                   "max_threshold", "32")));
+    }
+
+    /**
+     * Test {@link ConfigurationException} thrown on alter keyspace to no DC option in replication configuration.
+     */
+    @Test
+    public void testAlterKeyspaceWithNoOptionThrowsConfigurationException() throws Throwable
+    {
+        // Create keyspaces
+        execute("CREATE KEYSPACE testABC WITH replication={ 'class' : 'NetworkTopologyStrategy', '" + DATA_CENTER + "' : 3 }");
+        execute("CREATE KEYSPACE testXYZ WITH replication={ 'class' : 'SimpleStrategy', 'replication_factor' : 3 }");
+
+        // Try to alter the created keyspace without any option
+        assertInvalidThrow(ConfigurationException.class, "ALTER KEYSPACE testABC WITH replication={ 'class' : 'NetworkTopologyStrategy' }");
+        assertInvalidThrow(ConfigurationException.class, "ALTER KEYSPACE testXYZ WITH replication={ 'class' : 'SimpleStrategy' }");
+
+        // Make sure that the alter works as expected
+        execute("ALTER KEYSPACE testABC WITH replication={ 'class' : 'NetworkTopologyStrategy', '" + DATA_CENTER + "' : 2 }");
+        execute("ALTER KEYSPACE testXYZ WITH replication={ 'class' : 'SimpleStrategy', 'replication_factor' : 2 }");
+
+        // clean up
+        execute("DROP KEYSPACE IF EXISTS testABC");
+        execute("DROP KEYSPACE IF EXISTS testXYZ");
+    }
+
+    /**
+     * Test {@link ConfigurationException} thrown when altering a keyspace to invalid DC option in replication configuration.
+     */
+    @Test
+    public void testAlterKeyspaceWithNTSOnlyAcceptsConfiguredDataCenterNames() throws Throwable
+    {
+        // Create a keyspace with expected DC name.
+        execute("CREATE KEYSPACE testABC WITH replication = {'class' : 'NetworkTopologyStrategy', '" + DATA_CENTER + "' : 2 }");
+
+        // try modifying the keyspace
+        assertInvalidThrow(ConfigurationException.class, "ALTER KEYSPACE testABC WITH replication = { 'class' : 'NetworkTopologyStrategy', 'INVALID_DC' : 2 }");
+        execute("ALTER KEYSPACE testABC WITH replication = {'class' : 'NetworkTopologyStrategy', '" + DATA_CENTER + "' : 3 }");
+
+        // Mix valid and invalid, should throw an exception
+        assertInvalidThrow(ConfigurationException.class, "ALTER KEYSPACE testABC WITH replication={ 'class' : 'NetworkTopologyStrategy', '" + DATA_CENTER + "' : 2 , 'INVALID_DC': 1}");
+
+        // clean-up
+        execute("DROP KEYSPACE IF EXISTS testABC");
     }
 
     /**
@@ -288,7 +328,7 @@ public class AlterTest extends CQLTester
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),
-                   row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor")));
+                   row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor", "min_compress_ratio", "1.1")));
 
         execute("ALTER TABLE %s WITH compression = { 'class' : 'SnappyCompressor', 'chunk_length_in_kb' : 32 };");
 
@@ -297,7 +337,7 @@ public class AlterTest extends CQLTester
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),
-                   row(map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor")));
+                   row(map("chunk_length_in_kb", "32", "class", "org.apache.cassandra.io.compress.SnappyCompressor", "min_compress_ratio", "1.1")));
 
         execute("ALTER TABLE %s WITH compression = { 'sstable_compression' : 'LZ4Compressor', 'chunk_length_kb' : 64 };");
 
@@ -306,7 +346,25 @@ public class AlterTest extends CQLTester
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),
-                   row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor")));
+                   row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor", "min_compress_ratio", "1.1")));
+
+        execute("ALTER TABLE %s WITH compression = { 'sstable_compression' : 'LZ4Compressor', 'min_compress_ratio' : 2 };");
+
+        assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
+                                  SchemaConstants.SCHEMA_KEYSPACE_NAME,
+                                  SchemaKeyspace.TABLES),
+                           KEYSPACE,
+                           currentTable()),
+                   row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor", "min_compress_ratio", "2.0")));
+
+        execute("ALTER TABLE %s WITH compression = { 'sstable_compression' : 'LZ4Compressor', 'min_compress_ratio' : 0 };");
+
+        assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
+                                  SchemaConstants.SCHEMA_KEYSPACE_NAME,
+                                  SchemaKeyspace.TABLES),
+                           KEYSPACE,
+                           currentTable()),
+                   row(map("chunk_length_in_kb", "64", "class", "org.apache.cassandra.io.compress.LZ4Compressor", "min_compress_ratio", "0.0")));
 
         execute("ALTER TABLE %s WITH compression = { 'sstable_compression' : '', 'chunk_length_kb' : 32 };");
 
@@ -341,37 +399,9 @@ public class AlterTest extends CQLTester
 
         assertThrowsConfigurationException("The 'chunk_length_kb' option must not be used if the chunk length is already specified by the 'chunk_length_in_kb' option",
                                            "ALTER TABLE %s WITH compression = { 'class' : 'SnappyCompressor', 'chunk_length_kb' : 32 , 'chunk_length_in_kb' : 32 };");
-    }
 
-    @Test
-    public void testAlterType() throws Throwable
-    {
-        createTable("CREATE TABLE %s (id text PRIMARY KEY, content text);");
-        alterTable("ALTER TABLE %s ALTER content TYPE blob");
-
-        createTable("CREATE TABLE %s (pk int, ck text, value blob, PRIMARY KEY (pk, ck)) WITH CLUSTERING ORDER BY (ck DESC)");
-        alterTable("ALTER TABLE %s ALTER ck TYPE blob");
-
-        createTable("CREATE TABLE %s (pk int, ck int, value blob, PRIMARY KEY (pk, ck))");
-        assertThrowsConfigurationException("Cannot change value from type blob to type text: types are incompatible.",
-                                           "ALTER TABLE %s ALTER value TYPE TEXT;");
-    }
-
-    /**
-     * tests CASSANDRA-10027
-     */
-    @Test
-    public void testAlterColumnTypeToDate() throws Throwable
-    {
-        createTable("CREATE TABLE %s (key int PRIMARY KEY, c1 int);");
-        execute("INSERT INTO %s (key, c1) VALUES (1,1);");
-        execute("ALTER TABLE %s ALTER c1 TYPE date;");
-        assertRows(execute("SELECT * FROM %s"), row(1, 1));
-
-        createTable("CREATE TABLE %s (key int PRIMARY KEY, c1 varint);");
-        execute("INSERT INTO %s (key, c1) VALUES (1,1);");
-        assertInvalidMessage("Cannot change c1 from type varint to type date: types are incompatible.",
-                             "ALTER TABLE %s ALTER c1 TYPE date;");
+        assertThrowsConfigurationException("Invalid negative min_compress_ratio",
+                                           "ALTER TABLE %s WITH compression = { 'class' : 'SnappyCompressor', 'min_compress_ratio' : -1 };");
     }
 
     private void assertThrowsConfigurationException(String errorMsg, String alterStmt) throws Throwable
@@ -385,109 +415,5 @@ public class AlterTest extends CQLTester
         {
             assertEquals(errorMsg, e.getMessage());
         }
-    }
-
-    @Test // tests CASSANDRA-8879
-    public void testAlterClusteringColumnTypeInCompactTable() throws Throwable
-    {
-        createTable("CREATE TABLE %s (key blob, column1 blob, value blob, PRIMARY KEY ((key), column1)) WITH COMPACT STORAGE");
-        assertInvalidThrow(InvalidRequestException.class, "ALTER TABLE %s ALTER column1 TYPE ascii");
-    }
-
-    /*
-     * Test case to check addition of one column
-    */
-    @Test
-    public void testAlterAddOneColumn() throws Throwable
-    {
-        createTable("CREATE TABLE IF NOT EXISTS %s (id int, name text, PRIMARY KEY (id))");
-        alterTable("ALTER TABLE %s add mail text;");
-
-        assertColumnNames(execute("SELECT * FROM %s"), "id", "mail", "name");
-    }
-
-    /*
-     * Test case to check addition of more than one column
-     */
-    @Test
-    public void testAlterAddMultiColumn() throws Throwable
-    {
-        createTable("CREATE TABLE IF NOT EXISTS %s (id int, yearofbirth int, PRIMARY KEY (id))");
-        alterTable("ALTER TABLE %s add (firstname text, password blob, lastname text, \"SOME escaped col\" bigint)");
-
-        assertColumnNames(execute("SELECT * FROM %s"), "id", "SOME escaped col", "firstname", "lastname", "password", "yearofbirth");
-    }
-
-    /*
-     *  Should throw SyntaxException if multiple columns are added using wrong syntax.
-     *  Expected Syntax : Alter table T1 add (C1 datatype,C2 datatype,C3 datatype)
-     */
-    @Test(expected = SyntaxException.class)
-    public void testAlterAddMultiColumnWithoutBraces() throws Throwable
-    {
-        execute("ALTER TABLE %s.users add lastname text, password blob, yearofbirth int;");
-    }
-
-    /*
-     *  Test case to check deletion of one column
-     */
-    @Test
-    public void testAlterDropOneColumn() throws Throwable
-    {
-        createTable("CREATE TABLE IF NOT EXISTS %s (id text, telephone int, yearofbirth int, PRIMARY KEY (id))");
-        alterTable("ALTER TABLE %s drop telephone");
-
-        assertColumnNames(execute("SELECT * FROM %s"), "id", "yearofbirth");
-    }
-
-    @Test
-    /*
-     * Test case to check deletion of more than one column
-     */
-    public void testAlterDropMultiColumn() throws Throwable
-    {
-        createTable("CREATE TABLE IF NOT EXISTS %s (id text, address text, telephone int, yearofbirth int, \"SOME escaped col\" bigint, PRIMARY KEY (id))");
-        alterTable("ALTER TABLE %s drop (address, telephone, \"SOME escaped col\");");
-
-        assertColumnNames(execute("SELECT * FROM %s"), "id", "yearofbirth");
-    }
-
-    /*
-     *  Should throw SyntaxException if multiple columns are dropped using wrong syntax.
-     */
-    @Test(expected = SyntaxException.class)
-    public void testAlterDeletionColumnWithoutBraces() throws Throwable
-    {
-        execute("ALTER TABLE %s.users drop name,address;");
-    }
-
-    @Test(expected = InvalidRequestException.class)
-    public void testAlterAddDuplicateColumn() throws Throwable
-    {
-        createTable("CREATE TABLE IF NOT EXISTS %s (id text, address text, telephone int, yearofbirth int, PRIMARY KEY (id))");
-        execute("ALTER TABLE %s add (salary int, salary int);");
-    }
-
-    @Test(expected = InvalidRequestException.class)
-    public void testAlterDropDuplicateColumn() throws Throwable
-    {
-        createTable("CREATE TABLE IF NOT EXISTS %s (id text, address text, telephone int, yearofbirth int, PRIMARY KEY (id))");
-        execute("ALTER TABLE %s drop (address, address);");
-    }
-
-    @Test
-    public void testAlterToBlob() throws Throwable
-    {
-        // This tests for the bug from #11820 in particular
-
-        createTable("CREATE TABLE %s (a int PRIMARY KEY, b int)");
-
-        execute("INSERT INTO %s (a, b) VALUES (1, 1)");
-
-        executeNet(Server.CURRENT_VERSION, "ALTER TABLE %s ALTER b TYPE BLOB");
-
-        assertRowsNet(Server.CURRENT_VERSION, executeNet(Server.CURRENT_VERSION, "SELECT * FROM %s WHERE a = 1"),
-            row(1, ByteBufferUtil.bytes(1))
-        );
     }
 }

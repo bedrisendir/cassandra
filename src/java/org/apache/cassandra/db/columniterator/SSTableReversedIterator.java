@@ -20,7 +20,6 @@ package org.apache.cassandra.db.columniterator;
 import java.io.IOException;
 import java.util.*;
 
-import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.partitions.ImmutableBTreePartition;
@@ -28,6 +27,7 @@ import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.util.FileDataInput;
 import org.apache.cassandra.io.util.FileHandle;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.btree.BTree;
 
 /**
@@ -46,10 +46,9 @@ public class SSTableReversedIterator extends AbstractSSTableIterator
                                    RowIndexEntry indexEntry,
                                    Slices slices,
                                    ColumnFilter columns,
-                                   boolean isForThrift,
                                    FileHandle ifile)
     {
-        super(sstable, file, key, indexEntry, slices, columns, isForThrift, ifile);
+        super(sstable, file, key, indexEntry, slices, columns, ifile);
     }
 
     protected Reader createReaderInternal(RowIndexEntry indexEntry, FileDataInput file, boolean shouldCloseFile)
@@ -89,7 +88,7 @@ public class SSTableReversedIterator extends AbstractSSTableIterator
         protected ReusablePartitionData createBuffer(int blocksCount)
         {
             int estimatedRowCount = 16;
-            int columnCount = metadata().partitionColumns().regulars.size();
+            int columnCount = metadata().regularColumns().size();
             if (columnCount == 0 || metadata().clusteringColumns().isEmpty())
             {
                 estimatedRowCount = 1;
@@ -223,7 +222,7 @@ public class SSTableReversedIterator extends AbstractSSTableIterator
         private ReverseIndexedReader(RowIndexEntry indexEntry, FileDataInput file, boolean shouldCloseFile)
         {
             super(file, shouldCloseFile);
-            this.indexState = new IndexState(this, sstable.metadata.comparator, indexEntry, true, ifile);
+            this.indexState = new IndexState(this, metadata.comparator, indexEntry, true, ifile);
         }
 
         @Override
@@ -310,23 +309,7 @@ public class SSTableReversedIterator extends AbstractSSTableIterator
             int currentBlock = indexState.currentBlockIdx();
 
             boolean canIncludeSliceStart = currentBlock == lastBlockIdx;
-
-            // When dealing with old format sstable, we have the problem that a row can span 2 index block, i.e. it can
-            // start at the end of a block and end at the beginning of the next one. That's not a problem per se for
-            // UnfilteredDeserializer.OldFormatSerializer, since it always read rows entirely, even if they span index
-            // blocks, but as we reading index block in reverse we must be careful to not read the end of the row at
-            // beginning of a block before we're reading the beginning of that row. So what we do is that if we detect
-            // that the row starting this block is also the row ending the previous one, we skip that first result and
-            // let it be read when we'll read the previous block.
-            boolean includeFirst = true;
-            if (!sstable.descriptor.version.storeRows() && currentBlock > 0)
-            {
-                ClusteringPrefix lastOfPrevious = indexState.index(currentBlock - 1).lastName;
-                ClusteringPrefix firstOfCurrent = indexState.index(currentBlock).firstName;
-                includeFirst = metadata().comparator.compare(lastOfPrevious, firstOfCurrent) != 0;
-            }
-
-            loadFromDisk(canIncludeSliceStart ? slice.start() : null, canIncludeSliceEnd ? slice.end() : null, includeFirst);
+            loadFromDisk(canIncludeSliceStart ? slice.start() : null, canIncludeSliceEnd ? slice.end() : null, true);
         }
 
         @Override
@@ -338,18 +321,18 @@ public class SSTableReversedIterator extends AbstractSSTableIterator
 
     private class ReusablePartitionData
     {
-        private final CFMetaData metadata;
+        private final TableMetadata metadata;
         private final DecoratedKey partitionKey;
-        private final PartitionColumns columns;
+        private final RegularAndStaticColumns columns;
 
         private MutableDeletionInfo.Builder deletionBuilder;
         private MutableDeletionInfo deletionInfo;
         private BTree.Builder<Row> rowBuilder;
         private ImmutableBTreePartition built;
 
-        private ReusablePartitionData(CFMetaData metadata,
+        private ReusablePartitionData(TableMetadata metadata,
                                       DecoratedKey partitionKey,
-                                      PartitionColumns columns,
+                                      RegularAndStaticColumns columns,
                                       int initialRowCapacity)
         {
             this.metadata = metadata;

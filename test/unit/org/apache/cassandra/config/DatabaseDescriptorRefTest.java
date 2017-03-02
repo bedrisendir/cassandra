@@ -62,7 +62,6 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.config.ConfigurationLoader",
     "org.apache.cassandra.config.Config",
     "org.apache.cassandra.config.Config$1",
-    "org.apache.cassandra.config.Config$RequestSchedulerId",
     "org.apache.cassandra.config.Config$CommitLogSync",
     "org.apache.cassandra.config.Config$DiskAccessMode",
     "org.apache.cassandra.config.Config$DiskFailurePolicy",
@@ -71,7 +70,6 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.config.Config$InternodeCompression",
     "org.apache.cassandra.config.Config$MemtableAllocationType",
     "org.apache.cassandra.config.Config$UserFunctionTimeoutPolicy",
-    "org.apache.cassandra.config.RequestSchedulerOptions",
     "org.apache.cassandra.config.ParameterizedClass",
     "org.apache.cassandra.config.EncryptionOptions",
     "org.apache.cassandra.config.EncryptionOptions$ClientEncryptionOptions",
@@ -99,9 +97,10 @@ public class DatabaseDescriptorRefTest
     "org.apache.cassandra.io.util.DataOutputStreamPlus",
     "org.apache.cassandra.io.util.DataOutputPlus",
     "org.apache.cassandra.io.util.DiskOptimizationStrategy",
+    "org.apache.cassandra.io.util.SpinningDiskOptimizationStrategy",
     "org.apache.cassandra.locator.SimpleSeedProvider",
     "org.apache.cassandra.locator.SeedProvider",
-    "org.apache.cassandra.scheduler.IRequestScheduler",
+    "org.apache.cassandra.net.BackPressureStrategy",
     "org.apache.cassandra.security.EncryptionContext",
     "org.apache.cassandra.service.CacheService$CacheType",
     "org.apache.cassandra.utils.FBUtilities",
@@ -199,7 +198,6 @@ public class DatabaseDescriptorRefTest
         for (String methodName : new String[]{
             "clientInitialization",
             "applyAddressConfig",
-            "applyThriftHSHA",
             "applyInitialTokens",
             // no seed provider in default configuration for clients
             // "applySeedProvider",
@@ -209,7 +207,6 @@ public class DatabaseDescriptorRefTest
             // "applySnitch",
             "applyEncryptionContext",
             // starts "REQUEST-SCHEDULER" thread via RoundRobinScheduler
-            // "applyRequestScheduler",
         })
         {
             Method method = cDatabaseDescriptor.getDeclaredMethod(methodName);

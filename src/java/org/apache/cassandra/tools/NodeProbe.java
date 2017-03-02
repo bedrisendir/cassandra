@@ -25,6 +25,7 @@ import java.lang.management.MemoryUsage;
 import java.lang.management.RuntimeMXBean;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.rmi.ConnectException;
 import java.rmi.server.RMIClientSocketFactory;
 import java.rmi.server.RMISocketFactory;
 import java.util.AbstractMap;
@@ -73,7 +74,7 @@ import org.apache.cassandra.metrics.TableMetrics;
 import org.apache.cassandra.metrics.ThreadPoolMetrics;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.net.MessagingServiceMBean;
-import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
+import org.apache.cassandra.service.ActiveRepairServiceMBean;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.service.CacheServiceMBean;
 import org.apache.cassandra.service.GCInspector;
@@ -122,6 +123,7 @@ public class NodeProbe implements AutoCloseable
     private StorageProxyMBean spProxy;
     private HintedHandOffManagerMBean hhProxy;
     private BatchlogManagerMBean bmProxy;
+    private ActiveRepairServiceMBean arsProxy;
     private boolean failed;
 
     /**
@@ -214,6 +216,8 @@ public class NodeProbe implements AutoCloseable
             gossProxy = JMX.newMBeanProxy(mbeanServerConn, name, GossiperMBean.class);
             name = new ObjectName(BatchlogManager.MBEAN_NAME);
             bmProxy = JMX.newMBeanProxy(mbeanServerConn, name, BatchlogManagerMBean.class);
+            name = new ObjectName(ActiveRepairServiceMBean.MBEAN_NAME);
+            arsProxy = JMX.newMBeanProxy(mbeanServerConn, name, ActiveRepairServiceMBean.class);
         }
         catch (MalformedObjectNameException e)
         {
@@ -237,7 +241,15 @@ public class NodeProbe implements AutoCloseable
 
     public void close() throws IOException
     {
-        jmxc.close();
+        try
+        {
+            jmxc.close();
+        }
+        catch (ConnectException e)
+        {
+            // result of 'stopdaemon' command - i.e. if close() call fails, the daemon is shutdown
+            System.out.println("Cassandra has shutdown.");
+        }
     }
 
     public int forceKeyspaceCleanup(int jobs, String keyspaceName, String... tables) throws IOException, ExecutionException, InterruptedException
@@ -616,14 +628,24 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.isJoined();
     }
 
+    public boolean isDrained()
+    {
+        return ssProxy.isDrained();
+    }
+
+    public boolean isDraining()
+    {
+        return ssProxy.isDraining();
+    }
+
     public void joinRing() throws IOException
     {
         ssProxy.joinRing();
     }
 
-    public void decommission() throws InterruptedException
+    public void decommission(boolean force) throws InterruptedException
     {
-        ssProxy.decommission();
+        ssProxy.decommission(force);
     }
 
     public void move(String newToken) throws IOException
@@ -959,21 +981,6 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.isGossipRunning();
     }
 
-    public void stopThriftServer()
-    {
-        ssProxy.stopRPCServer();
-    }
-
-    public void startThriftServer()
-    {
-        ssProxy.startRPCServer();
-    }
-
-    public boolean isThriftServerRunning()
-    {
-        return ssProxy.isRPCServerRunning();
-    }
-
     public void stopCassandraDaemon()
     {
         ssProxy.stopDaemon();
@@ -992,6 +999,16 @@ public class NodeProbe implements AutoCloseable
     public int getCompactionThroughput()
     {
         return ssProxy.getCompactionThroughputMbPerSec();
+    }
+
+    public void setConcurrentCompactors(int value)
+    {
+        ssProxy.setConcurrentCompactors(value);
+    }
+
+    public int getConcurrentCompactors()
+    {
+        return ssProxy.getConcurrentCompactors();
     }
 
     public long getTimeout(String type)
@@ -1013,7 +1030,7 @@ public class NodeProbe implements AutoCloseable
             case "truncate":
                 return ssProxy.getTruncateRpcTimeout();
             case "streamingsocket":
-                return (long) ssProxy.getStreamingSocketTimeout();
+                return ssProxy.getStreamingSocketTimeout();
             default:
                 throw new RuntimeException("Timeout type requires one of (" + GetTimeout.TIMEOUT_TYPES + ")");
         }
@@ -1325,6 +1342,20 @@ public class NodeProbe implements AutoCloseable
         }
     }
 
+    public CassandraMetricsRegistry.JmxTimerMBean getMessagingQueueWaitMetrics(String verb)
+    {
+        try
+        {
+            return JMX.newMBeanProxy(mbeanServerConn,
+                                     new ObjectName("org.apache.cassandra.metrics:name=" + verb + "-WaitLatency,type=Messaging"),
+                                     CassandraMetricsRegistry.JmxTimerMBean.class);
+        }
+        catch (MalformedObjectNameException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
     /**
      * Retrieve Proxy metrics
      * @param metricName CompletedTasks, PendingTasks, BytesCompacted or TotalCompactionsCompleted.
@@ -1484,6 +1515,11 @@ public class NodeProbe implements AutoCloseable
             throw new RuntimeException(e);
         }
     }
+
+    public ActiveRepairServiceMBean getRepairServiceProxy()
+    {
+        return arsProxy;
+    }
 }
 
 class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, ColumnFamilyStoreMBean>>
@@ -1507,8 +1543,8 @@ class ColumnFamilyStoreMBeanIterator implements Iterator<Map.Entry<String, Colum
                     return keyspaceNameCmp;
 
                 // get CF name and split it for index name
-                String e1CF[] = e1.getValue().getColumnFamilyName().split("\\.");
-                String e2CF[] = e2.getValue().getColumnFamilyName().split("\\.");
+                String e1CF[] = e1.getValue().getTableName().split("\\.");
+                String e2CF[] = e2.getValue().getTableName().split("\\.");
                 assert e1CF.length <= 2 && e2CF.length <= 2 : "unexpected split count for table name";
 
                 //if neither are indexes, just compare CF names

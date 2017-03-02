@@ -32,8 +32,8 @@ import org.junit.Test;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.cache.RowCacheKey;
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.db.marshal.AsciiType;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.filter.ColumnFilter;
@@ -58,13 +58,17 @@ public class RowCacheTest
     private static final String KEYSPACE_CACHED = "RowCacheTest";
     private static final String CF_CACHED = "CachedCF";
     private static final String CF_CACHEDINT = "CachedIntCF";
+    private static final String CF_CACHEDNOCLUSTER = "CachedNoClustering";
 
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
+        System.setProperty("org.caffinitas.ohc.segmentCount", "16");
         SchemaLoader.prepareServer();
         SchemaLoader.createKeyspace(KEYSPACE_CACHED,
                                     KeyspaceParams.simple(1),
+                                    SchemaLoader.standardCFMD(KEYSPACE_CACHED, CF_CACHEDNOCLUSTER, 1, AsciiType.instance, AsciiType.instance, null)
+                                                .caching(new CachingParams(true, 100)),
                                     SchemaLoader.standardCFMD(KEYSPACE_CACHED, CF_CACHED).caching(CachingParams.CACHE_EVERYTHING),
                                     SchemaLoader.standardCFMD(KEYSPACE_CACHED, CF_CACHEDINT, 1, IntegerType.instance)
                                                 .caching(new CachingParams(true, 100)));
@@ -94,9 +98,9 @@ public class RowCacheTest
 
         ByteBuffer key = ByteBufferUtil.bytes("rowcachekey");
         DecoratedKey dk = cachedStore.decorateKey(key);
-        RowCacheKey rck = new RowCacheKey(cachedStore.metadata.ksAndCFName, dk);
+        RowCacheKey rck = new RowCacheKey(cachedStore.metadata(), dk);
 
-        RowUpdateBuilder rub = new RowUpdateBuilder(cachedStore.metadata, System.currentTimeMillis(), key);
+        RowUpdateBuilder rub = new RowUpdateBuilder(cachedStore.metadata(), System.currentTimeMillis(), key);
         rub.clustering(String.valueOf(0));
         rub.add("val", ByteBufferUtil.bytes("val" + 0));
         rub.build().applyUnsafe();
@@ -203,6 +207,74 @@ public class RowCacheTest
         }
 
         CacheService.instance.setRowCacheCapacityInMB(0);
+    }
+
+    @Test
+    public void testRowCacheNoClustering() throws Exception
+    {
+        CompactionManager.instance.disableAutoCompaction();
+
+        Keyspace keyspace = Keyspace.open(KEYSPACE_CACHED);
+        ColumnFamilyStore cachedStore  = keyspace.getColumnFamilyStore(CF_CACHEDNOCLUSTER);
+
+        // empty the row cache
+        CacheService.instance.invalidateRowCache();
+
+        // set global row cache size to 1 MB
+        CacheService.instance.setRowCacheCapacityInMB(1);
+
+        // inserting 100 rows into column family
+        SchemaLoader.insertData(KEYSPACE_CACHED, CF_CACHEDNOCLUSTER, 0, 100);
+
+        // now reading rows one by one and checking if row cache grows
+        for (int i = 0; i < 100; i++)
+        {
+            DecoratedKey key = Util.dk("key" + i);
+
+            Util.getAll(Util.cmd(cachedStore, key).build());
+
+            assertEquals(CacheService.instance.rowCache.size(), i + 1);
+            assert(cachedStore.containsCachedParition(key)); // current key should be stored in the cache
+        }
+
+        // insert 10 more keys
+        SchemaLoader.insertData(KEYSPACE_CACHED, CF_CACHEDNOCLUSTER, 100, 10);
+
+        for (int i = 100; i < 110; i++)
+        {
+            DecoratedKey key = Util.dk("key" + i);
+
+            Util.getAll(Util.cmd(cachedStore, key).build());
+            assert cachedStore.containsCachedParition(key); // cache should be populated with the latest rows read (old ones should be popped)
+
+            // checking if cell is read correctly after cache
+            CachedPartition cp = cachedStore.getRawCachedPartition(key);
+            try (UnfilteredRowIterator ai = cp.unfilteredIterator(ColumnFilter.selection(cp.columns()), Slices.ALL, false))
+            {
+                assert ai.hasNext();
+                Row r = (Row)ai.next();
+                assertFalse(ai.hasNext());
+
+                Iterator<Cell> ci = r.cells().iterator();
+                assert(ci.hasNext());
+                Cell cell = ci.next();
+
+                assert cell.column().name.bytes.equals(ByteBufferUtil.bytes("val"));
+                assert cell.value().equals(ByteBufferUtil.bytes("val" + i));
+            }
+        }
+
+        // clear 100 rows from the cache
+        int keysLeft = 109;
+        for (int i = 109; i >= 10; i--)
+        {
+            cachedStore.invalidateCachedPartition(Util.dk("key" + i));
+            assert CacheService.instance.rowCache.size() == keysLeft;
+            keysLeft--;
+        }
+
+        CacheService.instance.setRowCacheCapacityInMB(0);
+
     }
 
     @Test
@@ -341,11 +413,11 @@ public class RowCacheTest
 
         ByteBuffer key = ByteBufferUtil.bytes("rowcachekey");
         DecoratedKey dk = cachedStore.decorateKey(key);
-        RowCacheKey rck = new RowCacheKey(cachedStore.metadata.ksAndCFName, dk);
+        RowCacheKey rck = new RowCacheKey(cachedStore.metadata(), dk);
         String values[] = new String[200];
         for (int i = 0; i < 200; i++)
         {
-            RowUpdateBuilder rub = new RowUpdateBuilder(cachedStore.metadata, System.currentTimeMillis(), key);
+            RowUpdateBuilder rub = new RowUpdateBuilder(cachedStore.metadata(), System.currentTimeMillis(), key);
             rub.clustering(String.valueOf(i));
             values[i] = "val" + i;
             rub.add("val", ByteBufferUtil.bytes(values[i]));
@@ -475,12 +547,10 @@ public class RowCacheTest
     private static void readData(String keyspace, String columnFamily, int offset, int numberOfRows)
     {
         ColumnFamilyStore store = Keyspace.open(keyspace).getColumnFamilyStore(columnFamily);
-        CFMetaData cfm = Schema.instance.getCFMetaData(keyspace, columnFamily);
 
         for (int i = offset; i < offset + numberOfRows; i++)
         {
             DecoratedKey key = Util.dk("key" + i);
-            Clustering cl = Clustering.make(ByteBufferUtil.bytes("col" + i));
             Util.getAll(Util.cmd(store, key).build());
         }
     }

@@ -39,7 +39,6 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.io.util.DataInputPlus.DataInputStreamPlus;
 import org.apache.cassandra.io.util.DataOutputStreamPlus;
 import org.apache.cassandra.net.MessageIn;
-import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.repair.NodePair;
 import org.apache.cassandra.repair.RepairJobDesc;
 import org.apache.cassandra.repair.Validator;
@@ -61,7 +60,7 @@ public class SerializationsTest extends AbstractSerializationsTester
         partitionerSwitcher = Util.switchPartitioner(RandomPartitioner.instance);
         RANDOM_UUID = UUID.fromString("b5c3d033-75aa-4c2f-a819-947aac7a0c54");
         FULL_RANGE = new Range<>(Util.testPartitioner().getMinimumToken(), Util.testPartitioner().getMinimumToken());
-        DESC = new RepairJobDesc(getVersion() < MessagingService.VERSION_21 ? null : RANDOM_UUID, RANDOM_UUID, "Keyspace1", "Standard1", Arrays.asList(FULL_RANGE));
+        DESC = new RepairJobDesc(RANDOM_UUID, RANDOM_UUID, "Keyspace1", "Standard1", Arrays.asList(FULL_RANGE));
     }
 
     @AfterClass
@@ -69,7 +68,7 @@ public class SerializationsTest extends AbstractSerializationsTester
     {
         partitionerSwitcher.close();
     }
-    
+
     private void testRepairMessageWrite(String fileName, RepairMessage... messages) throws IOException
     {
         try (DataOutputStreamPlus out = getOutput(fileName))
