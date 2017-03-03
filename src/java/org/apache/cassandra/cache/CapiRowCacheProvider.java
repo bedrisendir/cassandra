@@ -5,6 +5,7 @@ import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -17,12 +18,13 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.io.ISerializer;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.schema.TableId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.googlecode.concurrentlinkedhashmap.ConcurrentLinkedHashMap;
-import com.googlecode.concurrentlinkedhashmap.Weigher;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Weigher;
 import com.ibm.research.capiblock.CapiBlockDevice;
 
 public class CapiRowCacheProvider implements org.apache.cassandra.cache.CacheProvider<RowCacheKey, IRowCacheEntry> {
@@ -55,7 +57,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
     public static class CapiRowCache implements ICache<RowCacheKey, IRowCacheEntry> {
 
-        private final ConcurrentLinkedHashMap<RowCacheKey, IRowCacheEntry> map;
+        private final Cache<RowCacheKey, IRowCacheEntry> map;
         private final ISerializer<IRowCacheEntry> serializer = new RowCacheSerializer();
         final HashFunction hashFunc;
         final AtomicInteger size = new AtomicInteger();
@@ -64,15 +66,16 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         final ReentrantLock[] monitors = new ReentrantLock[Runtime.getRuntime().availableProcessors() * 64];
 
         CapiRowCache(long capacity) {
-            this.map = new ConcurrentLinkedHashMap.Builder<RowCacheKey, IRowCacheEntry>().weigher(new Weigher<IRowCacheEntry>() {
-                public int weightOf(IRowCacheEntry value) {
-                    long serializedSize = serializer.serializedSize(value);
-                    if (serializedSize > Integer.MAX_VALUE)
-                        throw new IllegalArgumentException("Unable to allocate " + serializedSize + " bytes");
+            this.map = Caffeine.newBuilder().weigher(new Weigher<RowCacheKey, IRowCacheEntry>(){
+				@Override
+				public int weigh(RowCacheKey key, IRowCacheEntry value) {
+					 long serializedSize = serializer.serializedSize(value);
+	                    if (serializedSize > Integer.MAX_VALUE)
+	                        throw new IllegalArgumentException("Unable to allocate " + serializedSize + " bytes");
 
-                    return (int) serializedSize;
-                }
-            }).maximumWeightedCapacity(DEFAULT_L2CACHE).concurrencyLevel(DEFAULT_CONCURENCY_LEVEL).build();
+	                    return (int) serializedSize;
+				}
+            }).maximumWeight(DEFAULT_L2CACHE).build();
 
             String hashClass = System.getProperty("capi.hash");
             try {
@@ -150,15 +153,16 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         }
 
         public int hashCode(RowCacheKey key) {
-            int result = key.ksAndCFName.hashCode();
+            int result = key.tableId.hashCode();
             result = 31 * result + (key != null ? hashFunc.hashCode(key.key) : 0);
             return result;
         }
 
         public boolean equals(RowCacheKey key, ByteBuffer keyBB) {
-            if (!readString(keyBB).equals(key.ksAndCFName.left))
+        	TableId tableId = TableId.fromUUID(new UUID(keyBB.getLong(), keyBB.getLong()));
+            if (!tableId.equals(key.tableId))
                 return false;
-            if (!readString(keyBB).equals(key.ksAndCFName.right))
+            if (!readString(keyBB).equals(key.indexName))
                 return false;
             if (keyBB.remaining() != key.key.length)
                 return false;
@@ -172,11 +176,12 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         public void serializeKey(RowCacheKey key, ByteBuffer bb) {
             try {
                 // logger.info("serializeKey=" + bb + ": " + key);
-                writeString(bb, key.ksAndCFName.left);
-                writeString(bb, key.ksAndCFName.right);
+                bb.putLong(key.tableId.asUUID().getMostSignificantBits());
+                bb.putLong(key.tableId.asUUID().getLeastSignificantBits());
+                writeString(bb, key.indexName);
                 bb.put(key.key);
             } catch (BufferOverflowException ex) {
-                logger.error("ideal: " + (getByteSizeForString(key.ksAndCFName.left) + getByteSizeForString(key.ksAndCFName.right) + key.key.length) + ", actual=" + bb.capacity());
+                logger.error("ideal: " + (key.tableId.serializedSize() + getByteSizeForString(key.indexName) + key.key.length) + ", actual=" + bb.capacity());
                 throw ex;
             }
         }
@@ -208,11 +213,12 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         }
 
         public RowCacheKey deserializeKey(ByteBuffer bb) {
-            String ksName = readString(bb);
-            String cfName = readString(bb);
+            TableId tableId = TableId.fromUUID(new UUID(bb.getLong(), bb.getLong()));
+            String indexName = readString(bb);
+           
             ByteBuffer keyBody = ByteBuffer.allocateDirect(bb.remaining());
             keyBody.put(bb);
-            return new RowCacheKey(Pair.create(ksName, cfName), keyBody);
+            return new RowCacheKey(tableId, indexName, keyBody);
         }
 
         public IRowCacheEntry deserializeValue(ByteBuffer bb) {
@@ -225,7 +231,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
         }
 
         public int keySize(RowCacheKey k) {
-            return getByteSizeForString(k.ksAndCFName.left) + getByteSizeForString(k.ksAndCFName.right) + k.key.length;
+            return k.tableId.serializedSize() + getByteSizeForString(k.indexName) + k.key.length;
         }
 
         public int valueSize(IRowCacheEntry v) {
@@ -322,7 +328,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
         @Override
         public long weightedSize() {
-            return map.weightedSize();
+            return map.estimatedSize();
         }
 
         @Override
@@ -434,7 +440,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
                 if (!exist(hash, false))
                     return false;
 
-                IRowCacheEntry current = map.get(key);
+                IRowCacheEntry current = map.getIfPresent(key);
                 if (current == null) {
                     current = getFromCapi(key, hash);
                     if (current == null) {
@@ -530,7 +536,7 @@ public class CapiRowCacheProvider implements org.apache.cassandra.cache.CachePro
 
             int hash = hashFunc.hashCode(key.key);
 
-            IRowCacheEntry entry = map.get(key);
+            IRowCacheEntry entry = map.getIfPresent(key);
             if (entry == null) {
                 if (exist(hash, false)) {
                     entry = getFromCapi(key, hash);
