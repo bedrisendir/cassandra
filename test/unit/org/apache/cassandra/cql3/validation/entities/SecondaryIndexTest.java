@@ -25,8 +25,8 @@ import java.util.concurrent.CountDownLatch;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.Test;
 
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.cql3.ColumnIdentifier;
@@ -111,9 +111,9 @@ public class SecondaryIndexTest extends CQLTester
 
         // IF NOT EXISTS should apply in cases where the new index differs from an existing one in name only
         String otherIndexName = "index_" + System.nanoTime();
-        assertEquals(1, getCurrentColumnFamilyStore().metadata.getIndexes().size());
+        assertEquals(1, getCurrentColumnFamilyStore().metadata().indexes.size());
         createIndex("CREATE INDEX IF NOT EXISTS " + otherIndexName + " ON %s(b)");
-        assertEquals(1, getCurrentColumnFamilyStore().metadata.getIndexes().size());
+        assertEquals(1, getCurrentColumnFamilyStore().metadata().indexes.size());
         assertInvalidMessage(String.format("Index %s is a duplicate of existing index %s",
                                            removeQuotes(otherIndexName.toLowerCase(Locale.US)),
                                            removeQuotes(indexName.toLowerCase(Locale.US))),
@@ -174,10 +174,12 @@ public class SecondaryIndexTest extends CQLTester
         execute("INSERT INTO %s (userid, firstname, lastname, age) VALUES (?, 'Frodo', 'Baggins', 32)", id1);
         execute("UPDATE %s SET firstname = 'Samwise', lastname = 'Gamgee', age = 33 WHERE userid = ?", id2);
 
-        assertEmpty(execute("SELECT firstname FROM %s WHERE userid = ? AND age = 33", id1));
+        beforeAndAfterFlush(() -> {
+            assertEmpty(execute("SELECT firstname FROM %s WHERE userid = ? AND age = 33", id1));
 
-        assertRows(execute("SELECT firstname FROM %s WHERE userid = ? AND age = 33", id2),
-                   row("Samwise"));
+            assertRows(execute("SELECT firstname FROM %s WHERE userid = ? AND age = 33", id2),
+                       row("Samwise"));
+        });
     }
 
     /**
@@ -195,9 +197,11 @@ public class SecondaryIndexTest extends CQLTester
         execute("INSERT INTO %s (id, birth_year) VALUES ('Paul', 24)");
         execute("INSERT INTO %s (id, birth_year) VALUES ('Bob', 42)");
 
-        assertRows(execute("SELECT id FROM %s WHERE birth_year = 42"),
-                   row("Tom"),
-                   row("Bob"));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT id FROM %s WHERE birth_year = 42"),
+                       row("Tom"),
+                       row("Bob"));
+        });
 
         execute("DROP INDEX %s_birth_year_idx");
 
@@ -221,8 +225,10 @@ public class SecondaryIndexTest extends CQLTester
 
         assertInvalid("SELECT * FROM %s WHERE setid = 0 AND row < 1");
 
-        assertRows(execute("SELECT * FROM %s WHERE setid = 0 AND row < 1 ALLOW FILTERING"),
-                   row(0, 0, 0));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT * FROM %s WHERE setid = 0 AND row < 1 ALLOW FILTERING"),
+                       row(0, 0, 0));
+        });
     }
 
     /**
@@ -237,16 +243,6 @@ public class SecondaryIndexTest extends CQLTester
 
         assertInvalidThrow(ConfigurationException.class, String.format("CREATE TABLE %s (key varchar PRIMARY KEY, password varchar, gender varchar) WITH compression = { 'sstable_compressor': 'DeflateCompressor' }",
                                                                        tableName));
-    }
-
-    /**
-     * Check one can use arbitrary name for datacenter when creating keyspace (#4278),
-     * migrated from cql_tests.py:TestCQL.keyspace_creation_options_test()
-     */
-    @Test
-    public void testDataCenterName() throws Throwable
-    {
-       execute("CREATE KEYSPACE Foo WITH replication = { 'class' : 'NetworkTopologyStrategy', 'us-east' : 1, 'us-west' : 1 };");
     }
 
     /**
@@ -267,27 +263,33 @@ public class SecondaryIndexTest extends CQLTester
 
         assertTrue(waitForIndex(keyspace(), tableName, "authoridx"));
 
-        assertRows(execute("SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
-                   row(1, 0),
-                   row(0, 0),
-                   row(0, 2));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
+                       row(1, 0),
+                       row(0, 0),
+                       row(0, 2));
+        });
 
         execute("INSERT INTO %s (blog_id, timestamp, author, content) VALUES (?, ?, ?, ?)", 1, 1, "tom", "6th post");
         execute("INSERT INTO %s (blog_id, timestamp, author, content) VALUES (?, ?, ?, ?)", 1, 2, "tom", "7th post");
         execute("INSERT INTO %s (blog_id, timestamp, author, content) VALUES (?, ?, ?, ?)", 1, 3, "bob", "8th post");
 
-        assertRows(execute("SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
-                   row(1, 0),
-                   row(1, 3),
-                   row(0, 0),
-                   row(0, 2));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
+                       row(1, 0),
+                       row(1, 3),
+                       row(0, 0),
+                       row(0, 2));
+        });
 
         execute("DELETE FROM %s WHERE blog_id = 0 AND timestamp = 2");
 
-        assertRows(execute("SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
-                   row(1, 0),
-                   row(1, 3),
-                   row(0, 0));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT blog_id, timestamp FROM %s WHERE author = 'bob'"),
+                       row(1, 0),
+                       row(1, 3),
+                       row(0, 0));
+        });
     }
 
     /**
@@ -337,17 +339,19 @@ public class SecondaryIndexTest extends CQLTester
         execute("INSERT INTO %s (pk0, pk1, ck0, ck1, ck2, value) VALUES (4, 5, 0, 1, 2, 3)");
         execute("INSERT INTO %s (pk0, pk1, ck0, ck1, ck2, value) VALUES (5, 0, 1, 2, 3, 4)");
 
-        assertRows(execute("SELECT value FROM %s WHERE pk0 = 2"),
-                   row(1));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT value FROM %s WHERE pk0 = 2"),
+                       row(1));
 
-        assertRows(execute("SELECT value FROM %s WHERE ck0 = 0"),
-                   row(3));
+            assertRows(execute("SELECT value FROM %s WHERE ck0 = 0"),
+                       row(3));
 
-        assertRows(execute("SELECT value FROM %s WHERE pk0 = 3 AND pk1 = 4 AND ck1 = 0"),
-                   row(2));
+            assertRows(execute("SELECT value FROM %s WHERE pk0 = 3 AND pk1 = 4 AND ck1 = 0"),
+                       row(2));
 
-        assertRows(execute("SELECT value FROM %s WHERE pk0 = 5 AND pk1 = 0 AND ck0 = 1 AND ck2 = 3 ALLOW FILTERING"),
-                   row(4));
+            assertRows(execute("SELECT value FROM %s WHERE pk0 = 5 AND pk1 = 0 AND ck0 = 1 AND ck2 = 3 ALLOW FILTERING"),
+                       row(4));
+        });
     }
 
     /**
@@ -370,8 +374,11 @@ public class SecondaryIndexTest extends CQLTester
         execute("insert into %s (interval, seq, id , severity) values('t',2, 3, 1)");
         execute("insert into %s (interval, seq, id , severity) values('t',2, 4, 2)");
 
-        assertRows(execute("select * from %s where severity = 3 and interval = 't' and seq =1"),
-                   row("t", 1, 4, 3));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("select * from %s where severity = 3 and interval = 't' and seq =1"),
+                       row("t", 1, 4, 3));
+
+        });
     }
 
     /**
@@ -402,23 +409,25 @@ public class SecondaryIndexTest extends CQLTester
         execute("INSERT INTO %s (k, v, l, s, m) VALUES (1, 0, [1, 2, 4], {},         {'b' : 1})");
         execute("INSERT INTO %s (k, v, l, s, m) VALUES (1, 1, [4, 5],    {'d'},      {'a' : 1, 'b' : 3})");
 
-        // lists
-        assertRows(execute("SELECT k, v FROM %s WHERE l CONTAINS 1"), row(1, 0), row(0, 0), row(0, 2));
-        assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND l CONTAINS 1"), row(0, 0), row(0, 2));
-        assertRows(execute("SELECT k, v FROM %s WHERE l CONTAINS 2"), row(1, 0), row(0, 0));
-        assertEmpty(execute("SELECT k, v FROM %s WHERE l CONTAINS 6"));
+        beforeAndAfterFlush(() -> {
+            // lists
+            assertRows(execute("SELECT k, v FROM %s WHERE l CONTAINS 1"), row(1, 0), row(0, 0), row(0, 2));
+            assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND l CONTAINS 1"), row(0, 0), row(0, 2));
+            assertRows(execute("SELECT k, v FROM %s WHERE l CONTAINS 2"), row(1, 0), row(0, 0));
+            assertEmpty(execute("SELECT k, v FROM %s WHERE l CONTAINS 6"));
 
-        // sets
-        assertRows(execute("SELECT k, v FROM %s WHERE s CONTAINS 'a'"), row(0, 0), row(0, 2));
-        assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND s CONTAINS 'a'"), row(0, 0), row(0, 2));
-        assertRows(execute("SELECT k, v FROM %s WHERE s CONTAINS 'd'"), row(1, 1));
-        assertEmpty(execute("SELECT k, v FROM %s  WHERE s CONTAINS 'e'"));
+            // sets
+            assertRows(execute("SELECT k, v FROM %s WHERE s CONTAINS 'a'"), row(0, 0), row(0, 2));
+            assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND s CONTAINS 'a'"), row(0, 0), row(0, 2));
+            assertRows(execute("SELECT k, v FROM %s WHERE s CONTAINS 'd'"), row(1, 1));
+            assertEmpty(execute("SELECT k, v FROM %s  WHERE s CONTAINS 'e'"));
 
-        // maps
-        assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS 1"), row(1, 0), row(1, 1), row(0, 0), row(0, 1));
-        assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS 1"), row(0, 0), row(0, 1));
-        assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS 2"), row(0, 1));
-        assertEmpty(execute("SELECT k, v FROM %s  WHERE m CONTAINS 4"));
+            // maps
+            assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS 1"), row(1, 0), row(1, 1), row(0, 0), row(0, 1));
+            assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS 1"), row(0, 0), row(0, 1));
+            assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS 2"), row(0, 1));
+            assertEmpty(execute("SELECT k, v FROM %s  WHERE m CONTAINS 4"));
+        });
     }
 
     /**
@@ -438,10 +447,12 @@ public class SecondaryIndexTest extends CQLTester
         execute("INSERT INTO %s (k, v, m) VALUES (1, 1, {'a' : 1, 'b' : 3})");
 
         // maps
-        assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS KEY 'a'"), row(1, 1), row(0, 0), row(0, 1));
-        assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS KEY 'a'"), row(0, 0), row(0, 1));
-        assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS KEY 'c'"), row(0, 2));
-        assertEmpty(execute("SELECT k, v FROM %s  WHERE m CONTAINS KEY 'd'"));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS KEY 'a'"), row(1, 1), row(0, 0), row(0, 1));
+            assertRows(execute("SELECT k, v FROM %s WHERE k = 0 AND m CONTAINS KEY 'a'"), row(0, 0), row(0, 1));
+            assertRows(execute("SELECT k, v FROM %s WHERE m CONTAINS KEY 'c'"), row(0, 2));
+            assertEmpty(execute("SELECT k, v FROM %s  WHERE m CONTAINS KEY 'd'"));
+        });
     }
 
     /**
@@ -464,10 +475,12 @@ public class SecondaryIndexTest extends CQLTester
         execute("INSERT INTO %s (k1, k2, v) VALUES (2, 1, 8)");
         execute("INSERT INTO %s (k1, k2, v) VALUES (3, 0, 1)");
 
-        assertRows(execute("SELECT * FROM %s WHERE k2 = 0 AND v >= 2 ALLOW FILTERING"),
-                   row(2, 0, 7),
-                   row(0, 0, 3),
-                   row(1, 0, 4));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT * FROM %s WHERE k2 = 0 AND v >= 2 ALLOW FILTERING"),
+                       row(2, 0, 7),
+                       row(0, 0, 3),
+                       row(1, 0, 4));
+        });
     }
 
     /**
@@ -482,11 +495,15 @@ public class SecondaryIndexTest extends CQLTester
         createIndex("create index ON %s (app_name)");
         createIndex("create index ON %s (last_access)");
 
-        assertRows(execute("select count(*) from %s where app_name='foo' and account='bar' and last_access > 4 allow filtering"), row(0L));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("select count(*) from %s where app_name='foo' and account='bar' and last_access > 4 allow filtering"), row(0L));
+        });
 
         execute("insert into %s (username, session_id, app_name, account, last_access, created_on) values ('toto', 'foo', 'foo', 'bar', 12, 13)");
 
-        assertRows(execute("select count(*) from %s where app_name='foo' and account='bar' and last_access > 4 allow filtering"), row(1L));
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("select count(*) from %s where app_name='foo' and account='bar' and last_access > 4 allow filtering"), row(1L));
+        });
     }
 
     @Test
@@ -828,11 +845,11 @@ public class SecondaryIndexTest extends CQLTester
         createIndex(String.format("CREATE CUSTOM INDEX c_idx_2 ON %%s(c) USING '%s' WITH OPTIONS = {'foo':'b'}", indexClassName));
 
         ColumnFamilyStore cfs = getCurrentColumnFamilyStore();
-        CFMetaData cfm = cfs.metadata;
-        StubIndex index1 = (StubIndex)cfs.indexManager.getIndex(cfm.getIndexes()
+        TableMetadata cfm = cfs.metadata();
+        StubIndex index1 = (StubIndex)cfs.indexManager.getIndex(cfm.indexes
                                                                    .get("c_idx_1")
                                                                    .orElseThrow(throwAssert("index not found")));
-        StubIndex index2 = (StubIndex)cfs.indexManager.getIndex(cfm.getIndexes()
+        StubIndex index2 = (StubIndex)cfs.indexManager.getIndex(cfm.indexes
                                                                    .get("c_idx_2")
                                                                    .orElseThrow(throwAssert("index not found")));
         Object[] row1a = row(0, 0, 0);
@@ -870,8 +887,8 @@ public class SecondaryIndexTest extends CQLTester
         createIndex(String.format("CREATE CUSTOM INDEX c_idx ON %%s(c) USING '%s'", indexClassName));
 
         ColumnFamilyStore cfs = getCurrentColumnFamilyStore();
-        CFMetaData cfm = cfs.metadata;
-        StubIndex index1 = (StubIndex) cfs.indexManager.getIndex(cfm.getIndexes()
+        TableMetadata cfm = cfs.metadata();
+        StubIndex index1 = (StubIndex) cfs.indexManager.getIndex(cfm.indexes
                 .get("c_idx")
                 .orElseThrow(throwAssert("index not found")));
 
@@ -926,8 +943,8 @@ public class SecondaryIndexTest extends CQLTester
         createIndex(String.format("CREATE CUSTOM INDEX test_index ON %%s() USING '%s'", StubIndex.class.getName()));
         execute("INSERT INTO %s (k, c, v1, v2) VALUES (0, 0, 0, 0) USING TIMESTAMP 0");
 
-        ColumnDefinition v1 = getCurrentColumnFamilyStore().metadata.getColumnDefinition(new ColumnIdentifier("v1", true));
-        ColumnDefinition v2 = getCurrentColumnFamilyStore().metadata.getColumnDefinition(new ColumnIdentifier("v2", true));
+        ColumnMetadata v1 = getCurrentColumnFamilyStore().metadata().getColumn(new ColumnIdentifier("v1", true));
+        ColumnMetadata v2 = getCurrentColumnFamilyStore().metadata().getColumn(new ColumnIdentifier("v2", true));
 
         StubIndex index = (StubIndex)getCurrentColumnFamilyStore().indexManager.getIndexByName("test_index");
         assertEquals(1, index.rowsInserted.size());
@@ -1012,16 +1029,13 @@ public class SecondaryIndexTest extends CQLTester
     {
         createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY ((a), b))");
         createIndex("CREATE INDEX c_idx ON %s(c)");
-        MD5Digest cqlId = prepareStatement("SELECT * FROM %s.%s WHERE c=?", false).statementId;
-        Integer thriftId = prepareStatement("SELECT * FROM %s.%s WHERE c=?", true).toThriftPreparedResult().getItemId();
+        MD5Digest cqlId = prepareStatement("SELECT * FROM %s.%s WHERE c=?").statementId;
 
         assertNotNull(QueryProcessor.instance.getPrepared(cqlId));
-        assertNotNull(QueryProcessor.instance.getPreparedForThrift(thriftId));
 
         dropIndex("DROP INDEX %s.c_idx");
 
         assertNull(QueryProcessor.instance.getPrepared(cqlId));
-        assertNull(QueryProcessor.instance.getPreparedForThrift(thriftId));
     }
 
     // See CASSANDRA-11021
@@ -1177,23 +1191,187 @@ public class SecondaryIndexTest extends CQLTester
                    row(bytes("foo124"), EMPTY_BYTE_BUFFER));
     }
 
-    private ResultMessage.Prepared prepareStatement(String cql, boolean forThrift)
+    @Test
+    public void testPartitionKeyWithIndex() throws Throwable
     {
-        return QueryProcessor.prepare(String.format(cql, KEYSPACE, currentTable()),
-                                      ClientState.forInternalCalls(),
-                                      forThrift);
+        createTable("CREATE TABLE %s (a int, b int, c int, PRIMARY KEY ((a, b)))");
+        createIndex("CREATE INDEX ON %s (a);");
+        createIndex("CREATE INDEX ON %s (b);");
+
+        execute("INSERT INTO %s (a, b, c) VALUES (1,2,3)");
+        execute("INSERT INTO %s (a, b, c) VALUES (2,3,4)");
+        execute("INSERT INTO %s (a, b, c) VALUES (5,6,7)");
+
+        beforeAndAfterFlush(() -> {
+            assertRows(execute("SELECT * FROM %s WHERE a = 1"),
+                       row(1, 2, 3));
+            assertRows(execute("SELECT * FROM %s WHERE b = 3"),
+                       row(2, 3, 4));
+
+        });
     }
 
-    private void validateCell(Cell cell, ColumnDefinition def, ByteBuffer val, long timestamp)
+    @Test
+    public void testAllowFilteringOnPartitionKeyWithSecondaryIndex() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk1 int, pk2 int, c1 int, c2 int, v int, " +
+                    "PRIMARY KEY ((pk1, pk2), c1, c2))");
+        createIndex("CREATE INDEX v_idx_1 ON %s (v);");
+
+        for (int i = 1; i <= 5; i++)
+        {
+            for (int j = 1; j <= 2; j++)
+            {
+                execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", j, 1, 1, 1, i);
+                execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", j, 1, 1, i, i);
+                execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", j, 1, i, i, i);
+                execute("INSERT INTO %s (pk1, pk2, c1, c2, v) VALUES (?, ?, ?, ?, ?)", j, i, i, i, i);
+            }
+        }
+
+        beforeAndAfterFlush(() -> {
+            assertEmpty(execute("SELECT * FROM %s WHERE pk1 = 1 AND  c1 > 0 AND c1 < 5 AND c2 = 1 AND v = 3 ALLOW FILTERING;"));
+
+            assertRows(execute("SELECT * FROM %s WHERE pk1 = 1 AND  c1 > 0 AND c1 < 5 AND c2 = 3 AND v = 3 ALLOW FILTERING;"),
+                       row(1, 3, 3, 3, 3),
+                       row(1, 1, 1, 3, 3),
+                       row(1, 1, 3, 3, 3));
+
+            assertEmpty(execute("SELECT * FROM %s WHERE pk1 = 1 AND  c2 > 1 AND c2 < 5 AND v = 1 ALLOW FILTERING;"));
+
+            assertRows(execute("SELECT * FROM %s WHERE pk1 = 1 AND  c1 > 1 AND c2 > 2 AND v = 3 ALLOW FILTERING;"),
+                       row(1, 3, 3, 3, 3),
+                       row(1, 1, 3, 3, 3));
+
+            assertRows(execute("SELECT * FROM %s WHERE pk1 = 1 AND  pk2 > 1 AND c2 > 2 AND v = 3 ALLOW FILTERING;"),
+                       row(1, 3, 3, 3, 3));
+
+            assertRowsIgnoringOrder(execute("SELECT * FROM %s WHERE pk2 > 1 AND  c1 IN(0,1,2) AND v <= 3 ALLOW FILTERING;"),
+                                    row(1, 2, 2, 2, 2),
+                                    row(2, 2, 2, 2, 2));
+
+            assertRows(execute("SELECT * FROM %s WHERE pk1 >= 2 AND pk2 <=3 AND  c1 IN(0,1,2) AND c2 IN(0,1,2) AND v < 3  ALLOW FILTERING;"),
+                       row(2, 2, 2, 2, 2),
+                       row(2, 1, 1, 2, 2),
+                       row(2, 1, 2, 2, 2));
+
+            assertInvalidMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE,
+                                 "SELECT * FROM %s WHERE pk1 >= 1 AND pk2 <=3 AND  c1 IN(0,1,2) AND c2 IN(0,1,2) AND v = 3");
+        });
+    }
+
+    @Test
+    public void testAllowFilteringOnPartitionKeyWithIndexForContains() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k1 int, k2 int, v set<int>, PRIMARY KEY ((k1, k2)))");
+        createIndex("CREATE INDEX ON %s(k2)");
+
+        execute("INSERT INTO %s (k1, k2, v) VALUES (?, ?, ?)", 0, 0, set(1, 2, 3));
+        execute("INSERT INTO %s (k1, k2, v) VALUES (?, ?, ?)", 0, 1, set(2, 3, 4));
+        execute("INSERT INTO %s (k1, k2, v) VALUES (?, ?, ?)", 1, 0, set(3, 4, 5));
+        execute("INSERT INTO %s (k1, k2, v) VALUES (?, ?, ?)", 1, 1, set(4, 5, 6));
+
+        beforeAndAfterFlush(() -> {
+            assertInvalidMessage(StatementRestrictions.REQUIRES_ALLOW_FILTERING_MESSAGE,
+                                 "SELECT * FROM %s WHERE k2 > ?", 0);
+
+            assertRows(execute("SELECT * FROM %s WHERE k2 > ? ALLOW FILTERING", 0),
+                       row(0, 1, set(2, 3, 4)),
+                       row(1, 1, set(4, 5, 6)));
+
+            assertRows(execute("SELECT * FROM %s WHERE k2 >= ? AND v CONTAINS ? ALLOW FILTERING", 1, 6),
+                       row(1, 1, set(4, 5, 6)));
+
+            assertEmpty(execute("SELECT * FROM %s WHERE k2 < ? AND v CONTAINS ? ALLOW FILTERING", 0, 7));
+        });
+    }
+
+    @Test
+    public void testIndexOnStaticColumnWithPartitionWithoutRows() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int, c int, s int static, v int, PRIMARY KEY(pk, c))");
+        createIndex("CREATE INDEX ON %s (s)");
+
+        execute("INSERT INTO %s (pk, c, s, v) VALUES (?, ?, ?, ?)", 1, 1, 9, 1);
+        execute("INSERT INTO %s (pk, c, s, v) VALUES (?, ?, ?, ?)", 1, 2, 9, 2);
+        execute("INSERT INTO %s (pk, s) VALUES (?, ?)", 2, 9);
+        execute("INSERT INTO %s (pk, c, s, v) VALUES (?, ?, ?, ?)", 3, 1, 9, 1);
+        flush();
+
+        assertRows(execute("SELECT * FROM %s WHERE s = ?", 9),
+                   row(1, 1, 9, 1),
+                   row(1, 2, 9, 2),
+                   row(2, null, 9, null),
+                   row(3, 1, 9, 1));
+
+        execute("DELETE FROM %s WHERE pk = ?", 3);
+
+        assertRows(execute("SELECT * FROM %s WHERE s = ?", 9),
+                   row(1, 1, 9, 1),
+                   row(1, 2, 9, 2),
+                   row(2, null, 9, null));
+    }
+
+    @Test
+    public void testIndexOnRegularColumnWithPartitionWithoutRows() throws Throwable
+    {
+        createTable("CREATE TABLE %s (pk int, c int, s int static, v int, PRIMARY KEY(pk, c))");
+        createIndex("CREATE INDEX ON %s (v)");
+
+        execute("INSERT INTO %s (pk, c, s, v) VALUES (?, ?, ?, ?)", 1, 1, 9, 1);
+        execute("INSERT INTO %s (pk, c, s, v) VALUES (?, ?, ?, ?)", 1, 2, 9, 2);
+        execute("INSERT INTO %s (pk, s) VALUES (?, ?)", 2, 9);
+        execute("INSERT INTO %s (pk, c, s, v) VALUES (?, ?, ?, ?)", 3, 1, 9, 1);
+        flush();
+
+        execute("DELETE FROM %s WHERE pk = ? and c = ?", 3, 1);
+
+        assertRows(execute("SELECT * FROM %s WHERE v = ?", 1),
+                   row(1, 1, 9, 1));
+    }
+
+    @Test
+    public void testIndexOnDurationColumn() throws Throwable
+    {
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, d duration)");
+        assertInvalidMessage("Secondary indexes are not supported on duration columns",
+                             "CREATE INDEX ON %s (d)");
+
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, l list<duration>)");
+        assertInvalidMessage("Secondary indexes are not supported on collections containing durations",
+                             "CREATE INDEX ON %s (l)");
+
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, m map<int, duration>)");
+        assertInvalidMessage("Secondary indexes are not supported on collections containing durations",
+                             "CREATE INDEX ON %s (m)");
+
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, t tuple<int, duration>)");
+        assertInvalidMessage("Secondary indexes are not supported on tuples containing durations",
+                             "CREATE INDEX ON %s (t)");
+
+        String udt = createType("CREATE TYPE %s (i int, d duration)");
+
+        createTable("CREATE TABLE %s (k int PRIMARY KEY, t " + udt + ")");
+        assertInvalidMessage("Secondary indexes are not supported on UDTs containing durations",
+                             "CREATE INDEX ON %s (t)");
+    }
+
+    private ResultMessage.Prepared prepareStatement(String cql)
+    {
+        return QueryProcessor.prepare(String.format(cql, KEYSPACE, currentTable()),
+                                      ClientState.forInternalCalls());
+    }
+
+    private void validateCell(Cell cell, ColumnMetadata def, ByteBuffer val, long timestamp)
     {
         assertNotNull(cell);
         assertEquals(0, def.type.compare(cell.value(), val));
         assertEquals(timestamp, cell.timestamp());
     }
 
-    private static void assertColumnValue(int expected, String name, Row row, CFMetaData cfm)
+    private static void assertColumnValue(int expected, String name, Row row, TableMetadata cfm)
     {
-        ColumnDefinition col = cfm.getColumnDefinition(new ColumnIdentifier(name, true));
+        ColumnMetadata col = cfm.getColumn(new ColumnIdentifier(name, true));
         AbstractType<?> type = col.type;
         assertEquals(expected, type.compose(row.getCell(col).value()));
     }

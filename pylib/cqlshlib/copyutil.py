@@ -43,6 +43,7 @@ from select import select
 from uuid import UUID
 from util import profile_on, profile_off
 
+from cassandra import OperationTimedOut
 from cassandra.cluster import Cluster, DefaultConnection
 from cassandra.cqltypes import ReversedType, UserType
 from cassandra.metadata import protect_name, protect_names, protect_value
@@ -81,6 +82,11 @@ def printmsg(msg, eol='\n', encoding='utf8'):
     sys.stdout.write(msg.encode(encoding))
     sys.stdout.write(eol)
     sys.stdout.flush()
+
+
+# Keep arguments in sync with printmsg
+def swallowmsg(msg, eol='', encoding=''):
+    None
 
 
 class OneWayPipe(object):
@@ -241,7 +247,7 @@ class CopyTask(object):
 
         # do not display messages when exporting to STDOUT unless --debug is set
         self.printmsg = printmsg if self.fname is not None or direction == 'from' or DEBUG \
-            else lambda _, eol='\n': None
+            else swallowmsg
         self.options = self.parse_options(opts, direction)
 
         self.num_processes = self.options.copy['numprocesses']
@@ -365,6 +371,11 @@ class CopyTask(object):
         copy_options['maxinflightmessages'] = int(opts.pop('maxinflightmessages', '512'))
         copy_options['maxbackoffattempts'] = int(opts.pop('maxbackoffattempts', '12'))
         copy_options['maxpendingchunks'] = int(opts.pop('maxpendingchunks', '24'))
+        # set requesttimeout to a value high enough so that maxbatchsize rows will never timeout if the server
+        # responds: here we set it to 1 sec per 10 rows but no less than 60 seconds
+        copy_options['requesttimeout'] = int(opts.pop('requesttimeout', max(60, 1 * copy_options['maxbatchsize'] / 10)))
+        # set childtimeout higher than requesttimeout so that child processes have a chance to report request timeouts
+        copy_options['childtimeout'] = int(opts.pop('childtimeout', copy_options['requesttimeout'] + 30))
 
         self.check_options(copy_options)
         return CopyOptions(copy=copy_options, dialect=dialect_options, unrecognized=opts)
@@ -1195,8 +1206,20 @@ class ImportTask(CopyTask):
         if not self.fname:
             self.send_stdin_rows()
 
+        child_timeout = self.options.copy['childtimeout']
+        last_recv_num_records = 0
+        last_recv_time = time.time()
+
         while self.feeding_result is None or self.receive_meter.total_records < self.feeding_result.sent:
             self.receive_results()
+
+            if self.feeding_result is not None:
+                if self.receive_meter.total_records != last_recv_num_records:
+                    last_recv_num_records = self.receive_meter.total_records
+                    last_recv_time = time.time()
+                elif (time.time() - last_recv_time) > child_timeout:
+                    self.shell.printerr("No records inserted in {} seconds, aborting".format(child_timeout))
+                    break
 
             if self.error_handler.max_exceeded() or not self.all_processes_running():
                 break
@@ -1799,9 +1822,10 @@ class ImportConversion(object):
         # these functions are used for non-prepared statements to protect values with quotes if required
         self.protectors = [self._get_protector(t) for t in self.coltypes]
 
-    def _get_protector(self, t):
+    @staticmethod
+    def _get_protector(t):
         if t in ('ascii', 'text', 'timestamp', 'date', 'time', 'inet'):
-            return lambda v: unicode(protect_value(v), self.encoding)
+            return lambda v: protect_value(v)
         else:
             return lambda v: v
 
@@ -1818,15 +1842,18 @@ class ImportConversion(object):
                                                          where_clause)
         return parent.session.prepare(select_query)
 
+    @staticmethod
+    def unprotect(v):
+        if v is not None:
+            return CqlRuleSet.dequote_value(v)
+
     def _get_converter(self, cql_type):
         """
         Return a function that converts a string into a value the can be passed
         into BoundStatement.bind() for the given cql type. See cassandra.cqltypes
         for more details.
         """
-        def unprotect(v):
-            if v is not None:
-                return CqlRuleSet.dequote_value(v)
+        unprotect = self.unprotect
 
         def convert(t, v):
             v = unprotect(v)
@@ -1876,11 +1903,30 @@ class ImportConversion(object):
 
         def split(val, sep=','):
             """
-            Split into a list of values whenever we encounter a separator but
+            Split "val" into a list of values whenever the separator "sep" is found, but
             ignore separators inside parentheses or single quotes, except for the two
-            outermost parentheses, which will be ignored. We expect val to be at least
-            2 characters long (the two outer parentheses).
+            outermost parentheses, which will be ignored. This method is called when parsing composite
+            types, "val" should be at least 2 characters long, the first char should be an
+            open parenthesis and the last char should be a matching closing parenthesis. We could also
+            check exactly which parenthesis type depending on the caller, but I don't want to enforce
+            too many checks that don't necessarily provide any additional benefits, and risk breaking
+            data that could previously be imported, even if strictly speaking it is incorrect CQL.
+            For example, right now we accept sets that start with '[' and ']', I don't want to break this
+            by enforcing '{' and '}' in a minor release.
             """
+            def is_open_paren(cc):
+                return cc == '{' or cc == '[' or cc == '('
+
+            def is_close_paren(cc):
+                return cc == '}' or cc == ']' or cc == ')'
+
+            def paren_match(c1, c2):
+                return (c1 == '{' and c2 == '}') or (c1 == '[' and c2 == ']') or (c1 == '(' and c2 == ')')
+
+            if len(val) < 2 or not paren_match(val[0], val[-1]):
+                raise ParseError('Invalid composite string, it should start and end with matching parentheses: {}'
+                                 .format(val))
+
             ret = []
             last = 1
             level = 0
@@ -1889,9 +1935,9 @@ class ImportConversion(object):
                 if c == '\'':
                     quote = not quote
                 elif not quote:
-                    if c == '{' or c == '[' or c == '(':
+                    if is_open_paren(c):
                         level += 1
-                    elif c == '}' or c == ']' or c == ')':
+                    elif is_close_paren(c):
                         level -= 1
                     elif c == sep and level == 1:
                         ret.append(val[last:i])
@@ -1976,10 +2022,15 @@ class ImportConversion(object):
             an attribute, so we are using named tuples. It must also be hashable,
             so we cannot use dictionaries. Maybe there is a way to instantiate ct
             directly but I could not work it out.
+            Also note that it is possible that the subfield names in the csv are in the
+            wrong order, so we must sort them according to ct.fieldnames, see CASSANDRA-12959.
             """
             vals = [v for v in [split('{%s}' % vv, sep=':') for vv in split(val)]]
-            ret_type = namedtuple(ct.typename, [unprotect(v[0]) for v in vals])
-            return ret_type(*tuple(convert(t, v[1]) for t, v in zip(ct.subtypes, vals)))
+            dict_vals = dict((unprotect(v[0]), v[1]) for v in vals)
+            sorted_converted_vals = [(n, convert(t, dict_vals[n]) if n in dict_vals else self.get_null_val())
+                                     for n, t in zip(ct.fieldnames, ct.subtypes)]
+            ret_type = namedtuple(ct.typename, [v[0] for v in sorted_converted_vals])
+            return ret_type(*tuple(v[1] for v in sorted_converted_vals))
 
         def convert_single_subtype(val, ct=cql_type):
             return converters.get(ct.subtypes[0].typename, convert_unknown)(val, ct=ct.subtypes[0])
@@ -2052,6 +2103,13 @@ class ImportConversion(object):
             try:
                 return c(v) if v != self.nullval else self.get_null_val()
             except Exception, e:
+                # if we could not convert an empty string, then self.nullval has been set to a marker
+                # because the user needs to import empty strings, except that the converters for some types
+                # will fail to convert an empty string, in this case the null value should be inserted
+                # see CASSANDRA-12794
+                if v == '':
+                    return self.get_null_val()
+
                 if self.debug:
                     traceback.print_exc()
                 raise ParseError("Failed to parse %s : %s" % (val, e.message))
@@ -2077,7 +2135,7 @@ class ImportConversion(object):
             return self.cqltypes[n].serialize(v, self.proto_version)
 
         def serialize_value_not_prepared(n, v):
-            return self.cqltypes[n].serialize(self.converters[n](v), self.proto_version)
+            return self.cqltypes[n].serialize(self.converters[n](self.unprotect(v)), self.proto_version)
 
         partition_key_indexes = self.partition_key_indexes
         serialize = serialize_value_prepared if self.use_prepared_statements else serialize_value_not_prepared
@@ -2211,7 +2269,7 @@ class ImportProcess(ChildProcess):
         ChildProcess.__init__(self, params=params, target=self.run)
 
         self.skip_columns = params['skip_columns']
-        self.valid_columns = params['valid_columns']
+        self.valid_columns = [c.encode(self.encoding) for c in params['valid_columns']]
         self.skip_column_indexes = [i for i, c in enumerate(self.columns) if c in self.skip_columns]
 
         options = params['options']
@@ -2223,6 +2281,7 @@ class ImportProcess(ChildProcess):
         self.ttl = options.copy['ttl']
         self.max_inflight_messages = options.copy['maxinflightmessages']
         self.max_backoff_attempts = options.copy['maxbackoffattempts']
+        self.request_timeout = options.copy['requesttimeout']
 
         self.dialect_options = options.dialect
         self._session = None
@@ -2249,7 +2308,7 @@ class ImportProcess(ChildProcess):
                 connection_class=ConnectionWrapper)
 
             self._session = cluster.connect(self.ks)
-            self._session.default_timeout = None
+            self._session.default_timeout = self.request_timeout
         return self._session
 
     def run(self):
@@ -2335,6 +2394,10 @@ class ImportProcess(ChildProcess):
                         future = session.execute_async(statement)
                         future.add_callbacks(callback=result_callback, callback_args=(batch, chunk),
                                              errback=err_callback, errback_args=(batch, chunk, replicas))
+                    # do not handle else case, if a statement could not be created, the exception is handled
+                    # in self.wrap_make_statement and the error is reported, if a failure is injected that
+                    # causes the statement to be None, then we should not report the error so that we can test
+                    # the parent process handling missing batches from child processes
 
             except Exception, exc:
                 self.report_error(exc, chunk, chunk['rows'])
@@ -2349,8 +2412,8 @@ class ImportProcess(ChildProcess):
                 return None
 
         def make_statement_with_failures(query, conv, chunk, batch, replicas):
-            failed_batch = self.maybe_inject_failures(batch)
-            if failed_batch:
+            failed_batch, apply_failure = self.maybe_inject_failures(batch)
+            if apply_failure:
                 return failed_batch
             return make_statement(query, conv, chunk, batch, replicas)
 
@@ -2427,10 +2490,12 @@ class ImportProcess(ChildProcess):
 
     def maybe_inject_failures(self, batch):
         """
-        Examine self.test_failures and see if token_range is either a token range
-        supposed to cause a failure (failing_range) or to terminate the worker process
-        (exit_range). If not then call prepare_export_query(), which implements the
-        normal behavior.
+        Examine self.test_failures and see if the batch is a batch
+        supposed to cause a failure (failing_batch), or to terminate the worker process
+        (exit_batch), or not to be sent (unsent_batch).
+
+        @return any statement that will cause a failure or None if the statement should not be sent
+        plus a boolean indicating if a failure should be applied at all
         """
         if 'failing_batch' in self.test_failures:
             failing_batch = self.test_failures['failing_batch']
@@ -2438,14 +2503,19 @@ class ImportProcess(ChildProcess):
                 if batch['attempts'] < failing_batch['failures']:
                     statement = SimpleStatement("INSERT INTO badtable (a, b) VALUES (1, 2)",
                                                 consistency_level=self.consistency_level)
-                    return statement
+                    return statement, True  # use this statement, which will cause an error
 
         if 'exit_batch' in self.test_failures:
             exit_batch = self.test_failures['exit_batch']
             if exit_batch['id'] == batch['id']:
                 sys.exit(1)
 
-        return None  # carry on as normal
+        if 'unsent_batch' in self.test_failures:
+            unsent_batch = self.test_failures['unsent_batch']
+            if unsent_batch['id'] == batch['id']:
+                return None, True  # do not send this batch, which will cause missing acks in the parent process
+
+        return None, False  # carry on as normal, do not apply any failures
 
     @staticmethod
     def make_batch(batch_id, rows, attempts=1):
@@ -2506,6 +2576,8 @@ class ImportProcess(ChildProcess):
         self.update_chunk(batch['rows'], chunk)
 
     def err_callback(self, response, batch, chunk, replicas):
+        if isinstance(response, OperationTimedOut) and chunk['imported'] == chunk['num_rows_sent']:
+            return  # occasionally the driver sends false timeouts for rows already processed (PYTHON-652)
         err_is_final = batch['attempts'] >= self.max_attempts
         self.report_error(response, chunk, batch['rows'], batch['attempts'], err_is_final)
         if not err_is_final:

@@ -25,6 +25,7 @@ import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -147,13 +148,15 @@ public class RangeStreamer
                          boolean useStrictConsistency,
                          IEndpointSnitch snitch,
                          StreamStateStore stateStore,
-                         boolean connectSequentially)
+                         boolean connectSequentially,
+                         int connectionsPerHost)
     {
         this.metadata = metadata;
         this.tokens = tokens;
         this.address = address;
         this.description = description;
-        this.streamPlan = new StreamPlan(description, true, connectSequentially);
+        this.streamPlan = new StreamPlan(description, ActiveRepairService.UNREPAIRED_SSTABLE, connectionsPerHost,
+                true, false, connectSequentially, null);
         this.useStrictConsistency = useStrictConsistency;
         this.snitch = snitch;
         this.stateStore = stateStore;
@@ -179,7 +182,7 @@ public class RangeStreamer
         if (logger.isTraceEnabled())
         {
             for (Map.Entry<Range<Token>, InetAddress> entry : rangesForKeyspace.entries())
-                logger.trace(String.format("%s: range %s exists on %s", description, entry.getKey(), entry.getValue()));
+                logger.trace("{}: range {} exists on {}", description, entry.getKey(), entry.getValue());
         }
 
         for (Map.Entry<InetAddress, Collection<Range<Token>>> entry : getRangeFetchMap(rangesForKeyspace, sourceFilters, keyspaceName, useStrictConsistency).asMap().entrySet())
@@ -187,7 +190,7 @@ public class RangeStreamer
             if (logger.isTraceEnabled())
             {
                 for (Range<Token> r : entry.getValue())
-                    logger.trace(String.format("%s: range %s from source %s for keyspace %s", description, r, entry.getKey(), keyspaceName));
+                    logger.trace("{}: range {} from source {} for keyspace {}", description, r, entry.getKey(), keyspaceName);
             }
             toFetch.put(keyspaceName, entry);
         }
@@ -202,7 +205,7 @@ public class RangeStreamer
         AbstractReplicationStrategy strat = Keyspace.open(keyspaceName).getReplicationStrategy();
         return useStrictConsistency
                 && tokens != null
-                && metadata.getAllEndpoints().size() != strat.getReplicationFactor();
+                && metadata.getSizeOfAllEndpoints() != strat.getReplicationFactor();
     }
 
     /**
@@ -341,8 +344,8 @@ public class RangeStreamer
                 if (strat != null && strat.getReplicationFactor() == 1)
                 {
                     if (useStrictConsistency)
-                        throw new IllegalStateException("Unable to find sufficient sources for streaming range " + range + " in keyspace " + keyspace + " with RF=1." +
-                                                        "If you want to ignore this, consider using system property -Dcassandra.consistent.rangemovement=false.");
+                        throw new IllegalStateException("Unable to find sufficient sources for streaming range " + range + " in keyspace " + keyspace + " with RF=1. " +
+                                                        "Ensure this keyspace contains replicas in the source datacenter.");
                     else
                         logger.warn("Unable to find sufficient sources for streaming range {} in keyspace {} with RF=1. " +
                                     "Keyspace might be missing data.", range, keyspace);

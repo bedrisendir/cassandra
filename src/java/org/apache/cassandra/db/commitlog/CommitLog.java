@@ -45,6 +45,7 @@ import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.CommitLogMetrics;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.CompressionParams;
+import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.security.EncryptionContext;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
@@ -206,9 +207,9 @@ public class CommitLog implements CommitLogMBean,ICommitLog
     /**
      * Flushes all dirty CFs, waiting for them to free and recycle any segments they were retaining
      */
-    public void forceRecycleAllSegments(Iterable<UUID> droppedCfs)
+    public void forceRecycleAllSegments(Iterable<TableId> droppedTables)
     {
-        segmentManager.forceRecycleAll(droppedCfs);
+        segmentManager.forceRecycleAll(droppedTables);
     }
 
     /**
@@ -216,7 +217,7 @@ public class CommitLog implements CommitLogMBean,ICommitLog
      */
     public void forceRecycleAllSegments()
     {
-        segmentManager.forceRecycleAll(Collections.<UUID>emptyList());
+        segmentManager.forceRecycleAll(Collections.emptyList());
     }
 
     /**
@@ -296,13 +297,13 @@ public class CommitLog implements CommitLogMBean,ICommitLog
      * Modifies the per-CF dirty cursors of any commit log segments for the column family according to the position
      * given. Discards any commit log segments that are no longer used.
      *
-     * @param cfId    the column family ID that was flushed
+     * @param id         the table that was flushed
      * @param lowerBound the lowest covered replay position of the flush
      * @param lowerBound the highest covered replay position of the flush
      */
-    public void discardCompletedSegments(final UUID cfId, final CommitLogPosition lowerBound, final CommitLogPosition upperBound)
+    public void discardCompletedSegments(final TableId id, final CommitLogPosition lowerBound, final CommitLogPosition upperBound)
     {
-        logger.trace("discard completed log segments for {}-{}, table {}", lowerBound, upperBound, cfId);
+        logger.trace("discard completed log segments for {}-{}, table {}", lowerBound, upperBound, id);
 
         // Go thru the active segment files, which are ordered oldest to newest, marking the
         // flushed CF as clean, until we reach the segment file containing the CommitLogPosition passed
@@ -311,7 +312,7 @@ public class CommitLog implements CommitLogMBean,ICommitLog
         for (Iterator<CommitLogSegment> iter = segmentManager.getActiveSegments().iterator(); iter.hasNext();)
         {
             CommitLogSegment segment = iter.next();
-            segment.markClean(cfId, lowerBound, upperBound);
+            segment.markClean(id, lowerBound, upperBound);
 
             if (segment.isUnused())
             {

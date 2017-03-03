@@ -104,7 +104,7 @@ elif webbrowser._tryorder[0] == 'xdg-open' and os.environ.get('XDG_DATA_DIRS', '
     webbrowser._tryorder.remove('xdg-open')
     webbrowser._tryorder.append('xdg-open')
 
-# use bundled libs for python-cql and thrift, if available. if there
+# use bundled lib for python-cql if available. if there
 # is a ../lib dir, use bundled libs there preferentially.
 ZIPLIB_DIRS = [os.path.join(CASSANDRA_PATH, 'lib')]
 myplatform = platform.system()
@@ -151,6 +151,7 @@ except ImportError, e:
 
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import Cluster
+from cassandra.cqltypes import cql_typename
 from cassandra.marshal import int64_unpack
 from cassandra.metadata import (ColumnMetadata, KeyspaceMetadata,
                                 TableMetadata, protect_name, protect_names)
@@ -164,7 +165,7 @@ cqlshlibdir = os.path.join(CASSANDRA_PATH, 'pylib')
 if os.path.isdir(cqlshlibdir):
     sys.path.insert(0, cqlshlibdir)
 
-from cqlshlib import cql3handling, cqlhandling, pylexotron, sslhandling
+from cqlshlib import cql3handling, cqlhandling, pylexotron, sslhandling, cqlshhandling
 from cqlshlib.copyutil import ExportTask, ImportTask
 from cqlshlib.displaying import (ANSI_RESET, BLUE, COLUMN_NAME_COLORS, CYAN,
                                  RED, WHITE, FormattedValue, colorme)
@@ -275,232 +276,6 @@ CQL_ERRORS = (
 )
 
 debug_completion = bool(os.environ.get('CQLSH_DEBUG_COMPLETION', '') == 'YES')
-
-# we want the cql parser to understand our cqlsh-specific commands too
-my_commands_ending_with_newline = (
-    'help',
-    '?',
-    'consistency',
-    'serial',
-    'describe',
-    'desc',
-    'show',
-    'source',
-    'capture',
-    'login',
-    'debug',
-    'tracing',
-    'expand',
-    'paging',
-    'exit',
-    'quit',
-    'clear',
-    'cls'
-)
-
-
-cqlsh_syntax_completers = []
-
-
-def cqlsh_syntax_completer(rulename, termname):
-    def registrator(f):
-        cqlsh_syntax_completers.append((rulename, termname, f))
-        return f
-    return registrator
-
-
-cqlsh_extra_syntax_rules = r'''
-<cqlshCommand> ::= <CQL_Statement>
-                 | <specialCommand> ( ";" | "\n" )
-                 ;
-
-<specialCommand> ::= <describeCommand>
-                   | <consistencyCommand>
-                   | <serialConsistencyCommand>
-                   | <showCommand>
-                   | <sourceCommand>
-                   | <captureCommand>
-                   | <copyCommand>
-                   | <loginCommand>
-                   | <debugCommand>
-                   | <helpCommand>
-                   | <tracingCommand>
-                   | <expandCommand>
-                   | <exitCommand>
-                   | <pagingCommand>
-                   | <clearCommand>
-                   ;
-
-<describeCommand> ::= ( "DESCRIBE" | "DESC" )
-                                  ( "FUNCTIONS"
-                                  | "FUNCTION" udf=<anyFunctionName>
-                                  | "AGGREGATES"
-                                  | "AGGREGATE" uda=<userAggregateName>
-                                  | "KEYSPACES"
-                                  | "KEYSPACE" ksname=<keyspaceName>?
-                                  | ( "COLUMNFAMILY" | "TABLE" ) cf=<columnFamilyName>
-                                  | "INDEX" idx=<indexName>
-                                  | "MATERIALIZED" "VIEW" mv=<materializedViewName>
-                                  | ( "COLUMNFAMILIES" | "TABLES" )
-                                  | "FULL"? "SCHEMA"
-                                  | "CLUSTER"
-                                  | "TYPES"
-                                  | "TYPE" ut=<userTypeName>
-                                  | (ksname=<keyspaceName> | cf=<columnFamilyName> | idx=<indexName> | mv=<materializedViewName>))
-                    ;
-
-<consistencyCommand> ::= "CONSISTENCY" ( level=<consistencyLevel> )?
-                       ;
-
-<consistencyLevel> ::= "ANY"
-                     | "ONE"
-                     | "TWO"
-                     | "THREE"
-                     | "QUORUM"
-                     | "ALL"
-                     | "LOCAL_QUORUM"
-                     | "EACH_QUORUM"
-                     | "SERIAL"
-                     | "LOCAL_SERIAL"
-                     | "LOCAL_ONE"
-                     ;
-
-<serialConsistencyCommand> ::= "SERIAL" "CONSISTENCY" ( level=<serialConsistencyLevel> )?
-                             ;
-
-<serialConsistencyLevel> ::= "SERIAL"
-                           | "LOCAL_SERIAL"
-                           ;
-
-<showCommand> ::= "SHOW" what=( "VERSION" | "HOST" | "SESSION" sessionid=<uuid> )
-                ;
-
-<sourceCommand> ::= "SOURCE" fname=<stringLiteral>
-                  ;
-
-<captureCommand> ::= "CAPTURE" ( fname=( <stringLiteral> | "OFF" ) )?
-                   ;
-
-<copyCommand> ::= "COPY" cf=<columnFamilyName>
-                         ( "(" [colnames]=<colname> ( "," [colnames]=<colname> )* ")" )?
-                         ( dir="FROM" ( fname=<stringLiteral> | "STDIN" )
-                         | dir="TO"   ( fname=<stringLiteral> | "STDOUT" ) )
-                         ( "WITH" <copyOption> ( "AND" <copyOption> )* )?
-                ;
-
-<copyOption> ::= [optnames]=(<identifier>|<reserved_identifier>) "=" [optvals]=<copyOptionVal>
-               ;
-
-<copyOptionVal> ::= <identifier>
-                  | <reserved_identifier>
-                  | <term>
-                  ;
-
-# avoiding just "DEBUG" so that this rule doesn't get treated as a terminal
-<debugCommand> ::= "DEBUG" "THINGS"?
-                 ;
-
-<helpCommand> ::= ( "HELP" | "?" ) [topic]=( /[a-z_]*/ )*
-                ;
-
-<tracingCommand> ::= "TRACING" ( switch=( "ON" | "OFF" ) )?
-                   ;
-
-<expandCommand> ::= "EXPAND" ( switch=( "ON" | "OFF" ) )?
-                   ;
-
-<pagingCommand> ::= "PAGING" ( switch=( "ON" | "OFF" | /[0-9]+/) )?
-                  ;
-
-<loginCommand> ::= "LOGIN" username=<username> (password=<stringLiteral>)?
-                 ;
-
-<exitCommand> ::= "exit" | "quit"
-                ;
-
-<clearCommand> ::= "CLEAR" | "CLS"
-                 ;
-
-<qmark> ::= "?" ;
-'''
-
-
-@cqlsh_syntax_completer('helpCommand', 'topic')
-def complete_help(ctxt, cqlsh):
-    return sorted([t.upper() for t in cqldocs.get_help_topics() + cqlsh.get_help_topics()])
-
-
-def complete_source_quoted_filename(ctxt, cqlsh):
-    partial_path = ctxt.get_binding('partial', '')
-    head, tail = os.path.split(partial_path)
-    exhead = os.path.expanduser(head)
-    try:
-        contents = os.listdir(exhead or '.')
-    except OSError:
-        return ()
-    matches = filter(lambda f: f.startswith(tail), contents)
-    annotated = []
-    for f in matches:
-        match = os.path.join(head, f)
-        if os.path.isdir(os.path.join(exhead, f)):
-            match += '/'
-        annotated.append(match)
-    return annotated
-
-
-cqlsh_syntax_completer('sourceCommand', 'fname')(complete_source_quoted_filename)
-cqlsh_syntax_completer('captureCommand', 'fname')(complete_source_quoted_filename)
-
-
-@cqlsh_syntax_completer('copyCommand', 'fname')
-def copy_fname_completer(ctxt, cqlsh):
-    lasttype = ctxt.get_binding('*LASTTYPE*')
-    if lasttype == 'unclosedString':
-        return complete_source_quoted_filename(ctxt, cqlsh)
-    partial_path = ctxt.get_binding('partial')
-    if partial_path == '':
-        return ["'"]
-    return ()
-
-
-@cqlsh_syntax_completer('copyCommand', 'colnames')
-def complete_copy_column_names(ctxt, cqlsh):
-    existcols = map(cqlsh.cql_unprotect_name, ctxt.get_binding('colnames', ()))
-    ks = cqlsh.cql_unprotect_name(ctxt.get_binding('ksname', None))
-    cf = cqlsh.cql_unprotect_name(ctxt.get_binding('cfname'))
-    colnames = cqlsh.get_column_names(ks, cf)
-    if len(existcols) == 0:
-        return [colnames[0]]
-    return set(colnames[1:]) - set(existcols)
-
-
-COPY_COMMON_OPTIONS = ['DELIMITER', 'QUOTE', 'ESCAPE', 'HEADER', 'NULL', 'DATETIMEFORMAT',
-                       'MAXATTEMPTS', 'REPORTFREQUENCY', 'DECIMALSEP', 'THOUSANDSSEP', 'BOOLSTYLE',
-                       'NUMPROCESSES', 'CONFIGFILE', 'RATEFILE']
-COPY_FROM_OPTIONS = ['CHUNKSIZE', 'INGESTRATE', 'MAXBATCHSIZE', 'MINBATCHSIZE', 'MAXROWS',
-                     'SKIPROWS', 'SKIPCOLS', 'MAXPARSEERRORS', 'MAXINSERTERRORS', 'ERRFILE', 'PREPAREDSTATEMENTS', 'TTL']
-COPY_TO_OPTIONS = ['ENCODING', 'PAGESIZE', 'PAGETIMEOUT', 'BEGINTOKEN', 'ENDTOKEN', 'MAXOUTPUTSIZE', 'MAXREQUESTS',
-                   'FLOATPRECISION', 'DOUBLEPRECISION']
-
-
-@cqlsh_syntax_completer('copyOption', 'optnames')
-def complete_copy_options(ctxt, cqlsh):
-    optnames = map(str.upper, ctxt.get_binding('optnames', ()))
-    direction = ctxt.get_binding('dir').upper()
-    if direction == 'FROM':
-        opts = set(COPY_COMMON_OPTIONS + COPY_FROM_OPTIONS) - set(optnames)
-    elif direction == 'TO':
-        opts = set(COPY_COMMON_OPTIONS + COPY_TO_OPTIONS) - set(optnames)
-    return opts
-
-
-@cqlsh_syntax_completer('copyOption', 'optvals')
-def complete_copy_opt_values(ctxt, cqlsh):
-    optnames = ctxt.get_binding('optnames', ())
-    lastopt = optnames[-1].lower()
-    if lastopt == 'header':
-        return ['true', 'false']
-    return [cqlhandling.Hint('<single_character_string>')]
 
 
 class NoKeyspaceError(Exception):
@@ -1289,7 +1064,7 @@ class Shell(cmd.Cmd):
         elif result:
             # CAS INSERT/UPDATE
             self.writeresult("")
-            self.print_static_result(result.column_names, list(result), self.parse_for_update_meta(statement.query_string))
+            self.print_static_result(result, self.parse_for_update_meta(statement.query_string))
         self.flush_output()
         return True, future
 
@@ -1300,19 +1075,17 @@ class Shell(cmd.Cmd):
         if result.has_more_pages and self.tty:
             num_rows = 0
             while True:
-                page = result.current_rows
-                if page:
-                    num_rows += len(page)
-                    self.print_static_result(result.column_names, page, table_meta)
+                if result.current_rows:
+                    num_rows += len(result.current_rows)
+                    self.print_static_result(result, table_meta)
                 if result.has_more_pages:
                     raw_input("---MORE---")
                     result.fetch_next_page()
                 else:
                     break
         else:
-            rows = list(result)
-            num_rows = len(rows)
-            self.print_static_result(result.column_names, rows, table_meta)
+            num_rows = len(result.current_rows)
+            self.print_static_result(result, table_meta)
         self.writeresult("(%d rows)" % num_rows)
 
         if self.decoding_errors:
@@ -1322,24 +1095,24 @@ class Shell(cmd.Cmd):
                 self.writeresult('%d more decoding errors suppressed.'
                                  % (len(self.decoding_errors) - 2), color=RED)
 
-    def print_static_result(self, column_names, rows, table_meta):
-        if not column_names and not table_meta:
+    def print_static_result(self, result, table_meta):
+        if not result.column_names and not table_meta:
             return
 
-        column_names = column_names or table_meta.columns.keys()
+        column_names = result.column_names or table_meta.columns.keys()
         formatted_names = [self.myformat_colname(name, table_meta) for name in column_names]
-        if not rows:
+        if not result.current_rows:
             # print header only
             self.print_formatted_result(formatted_names, None)
             return
 
         cql_types = []
-        if table_meta:
-            ks_meta = self.conn.metadata.keyspaces[table_meta.keyspace_name]
-            cql_types = [CqlType(table_meta.columns[c].cql_type, ks_meta)
-                         if c in table_meta.columns else None for c in column_names]
+        if result.column_types:
+            ks_name = table_meta.keyspace_name if table_meta else self.current_keyspace
+            ks_meta = self.conn.metadata.keyspaces.get(ks_name, None)
+            cql_types = [CqlType(cql_typename(t), ks_meta) for t in result.column_types]
 
-        formatted_values = [map(self.myformat_value, row.values(), cql_types) for row in rows]
+        formatted_values = [map(self.myformat_value, row.values(), cql_types) for row in result.current_rows]
 
         if self.expand_enabled:
             self.print_formatted_result_vertically(formatted_names, formatted_values)
@@ -1545,12 +1318,10 @@ class Shell(cmd.Cmd):
                 name = protect_name(ksmeta.name)
                 print 'Keyspace %s' % (name,)
                 print '---------%s' % ('-' * len(name))
-                cmd.Cmd.columnize(self, protect_names(ksmeta.functions.keys()))
-                print
+                self._columnize_unicode(ksmeta.functions.keys())
         else:
             ksmeta = self.get_keyspace_meta(ksname)
-            cmd.Cmd.columnize(self, protect_names(ksmeta.functions.keys()))
-            print
+            self._columnize_unicode(ksmeta.functions.keys())
 
     def describe_function(self, ksname, functionname):
         if ksname is None:
@@ -1572,12 +1343,10 @@ class Shell(cmd.Cmd):
                 name = protect_name(ksmeta.name)
                 print 'Keyspace %s' % (name,)
                 print '---------%s' % ('-' * len(name))
-                cmd.Cmd.columnize(self, protect_names(ksmeta.aggregates.keys()))
-                print
+                self._columnize_unicode(ksmeta.aggregates.keys())
         else:
             ksmeta = self.get_keyspace_meta(ksname)
-            cmd.Cmd.columnize(self, protect_names(ksmeta.aggregates.keys()))
-            print
+            self._columnize_unicode(ksmeta.aggregates.keys())
 
     def describe_aggregate(self, ksname, aggregatename):
         if ksname is None:
@@ -1599,12 +1368,10 @@ class Shell(cmd.Cmd):
                 name = protect_name(ksmeta.name)
                 print 'Keyspace %s' % (name,)
                 print '---------%s' % ('-' * len(name))
-                cmd.Cmd.columnize(self, protect_names(ksmeta.user_types.keys()))
-                print
+                self._columnize_unicode(ksmeta.user_types.keys(), quote=True)
         else:
             ksmeta = self.get_keyspace_meta(ksname)
-            cmd.Cmd.columnize(self, protect_names(ksmeta.user_types.keys()))
-            print
+            self._columnize_unicode(ksmeta.user_types.keys(), quote=True)
 
     def describe_usertype(self, ksname, typename):
         if ksname is None:
@@ -1618,6 +1385,16 @@ class Shell(cmd.Cmd):
         except KeyError:
             raise UserTypeNotFound("User type %r not found" % typename)
         print usertype.export_as_string()
+
+    def _columnize_unicode(self, name_list, quote=False):
+        """
+        Used when columnizing identifiers that may contain unicode
+        """
+        names = [n.encode('utf-8') for n in name_list]
+        if quote:
+            names = protect_names(names)
+        cmd.Cmd.columnize(self, names)
+        print
 
     def describe_cluster(self):
         print '\nCluster: %s' % self.get_cluster_name()
@@ -1914,8 +1691,8 @@ class Shell(cmd.Cmd):
         SHOW VERSION
 
           Shows the version and build of the connected Cassandra instance, as
-          well as the versions of the CQL spec and the Thrift protocol that
-          the connected Cassandra instance understands.
+          well as the version of the CQL spec that the connected Cassandra
+          instance understands.
 
         SHOW HOST
 
@@ -1966,16 +1743,22 @@ class Shell(cmd.Cmd):
         except IOError, e:
             self.printerr('Could not open %r: %s' % (fname, e))
             return
-        subshell = Shell(self.hostname, self.port,
-                         color=self.color, encoding=self.encoding, stdin=f,
-                         tty=False, use_conn=self.conn, cqlver=self.cql_version,
-                         keyspace=self.current_keyspace,
+        username = self.auth_provider.username if self.auth_provider else None
+        password = self.auth_provider.password if self.auth_provider else None
+        subshell = Shell(self.hostname, self.port, color=self.color,
+                         username=username, password=password,
+                         encoding=self.encoding, stdin=f, tty=False, use_conn=self.conn,
+                         cqlver=self.cql_version, keyspace=self.current_keyspace,
+                         tracing_enabled=self.tracing_enabled,
+                         display_nanotime_format=self.display_nanotime_format,
                          display_timestamp_format=self.display_timestamp_format,
                          display_date_format=self.display_date_format,
-                         display_nanotime_format=self.display_nanotime_format,
                          display_float_precision=self.display_float_precision,
                          display_double_precision=self.display_double_precision,
-                         max_trace_wait=self.max_trace_wait)
+                         display_timezone=self.display_timezone,
+                         max_trace_wait=self.max_trace_wait, ssl=self.ssl,
+                         request_timeout=self.session.default_timeout,
+                         connect_timeout=self.conn.connect_timeout)
         subshell.cmdloop()
         f.close()
 
@@ -2508,10 +2291,10 @@ def read_options(cmdlineargs, environment):
 def setup_cqlruleset(cqlmodule):
     global cqlruleset
     cqlruleset = cqlmodule.CqlRuleSet
-    cqlruleset.append_rules(cqlsh_extra_syntax_rules)
-    for rulename, termname, func in cqlsh_syntax_completers:
+    cqlruleset.append_rules(cqlshhandling.cqlsh_extra_syntax_rules)
+    for rulename, termname, func in cqlshhandling.cqlsh_syntax_completers:
         cqlruleset.completer_for(rulename, termname)(func)
-    cqlruleset.commands_end_with_newline.update(my_commands_ending_with_newline)
+    cqlruleset.commands_end_with_newline.update(cqlshhandling.my_commands_ending_with_newline)
 
 
 def setup_cqldocs(cqlmodule):

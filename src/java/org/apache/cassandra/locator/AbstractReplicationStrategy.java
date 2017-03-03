@@ -60,7 +60,7 @@ public abstract class AbstractReplicationStrategy
 
     public IEndpointSnitch snitch;
 
-    AbstractReplicationStrategy(String keyspaceName, TokenMetadata tokenMetadata, IEndpointSnitch snitch, Map<String, String> configOptions)
+    protected AbstractReplicationStrategy(String keyspaceName, TokenMetadata tokenMetadata, IEndpointSnitch snitch, Map<String, String> configOptions)
     {
         assert keyspaceName != null;
         assert snitch != null;
@@ -320,7 +320,7 @@ public abstract class AbstractReplicationStrategy
         }
     }
 
-    private void validateExpectedOptions() throws ConfigurationException
+    protected void validateExpectedOptions() throws ConfigurationException
     {
         Collection expectedOptions = recognizedOptions();
         if (expectedOptions == null)

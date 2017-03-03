@@ -33,11 +33,13 @@ import com.datastax.driver.core.Row;
 import com.datastax.driver.core.exceptions.NoHostAvailableException;
 import com.datastax.driver.core.exceptions.WriteTimeoutException;
 import org.apache.cassandra.batchlog.BatchlogManager;
+import org.apache.cassandra.concurrent.NamedThreadFactory;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.WrappedRunnable;
 
 public class ViewLongTest extends CQLTester
 {
-    int protocolVersion = 4;
+    ProtocolVersion protocolVersion = ProtocolVersion.V4;
     private final List<String> views = new ArrayList<>();
 
     @BeforeClass
@@ -89,7 +91,7 @@ public class ViewLongTest extends CQLTester
         for (int i = 0; i < writers; i++)
         {
             final int writer = i;
-            Thread t = new Thread(new WrappedRunnable()
+            Thread t = NamedThreadFactory.createThread(new WrappedRunnable()
             {
                 public void runMayThrow()
                 {
@@ -127,7 +129,7 @@ public class ViewLongTest extends CQLTester
 
         for (int i = 0; i < writers * insertsPerWriter; i++)
         {
-            if (executeNet(protocolVersion, "SELECT COUNT(*) FROM system.batchlog").one().getLong(0) == 0)
+            if (executeNet(protocolVersion, "SELECT COUNT(*) FROM system.batches").one().getLong(0) == 0)
                 break;
             try
             {

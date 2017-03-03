@@ -28,7 +28,7 @@ import java.net.UnknownHostException;
 import java.util.*;
 
 import com.datastax.driver.core.Host;
-import org.apache.cassandra.stress.util.MultiPrintStream;
+import org.apache.cassandra.stress.util.ResultLogger;
 
 public class SettingsNode implements Serializable
 {
@@ -74,7 +74,6 @@ public class SettingsNode implements Serializable
         Set<String> r = new HashSet<>();
         switch (settings.mode.api)
         {
-            case THRIFT_SMART:
             case JAVA_DRIVER_NATIVE:
                 if (!isWhiteList)
                 {
@@ -82,7 +81,6 @@ public class SettingsNode implements Serializable
                         r.add(host.getAddress().getHostName());
                     break;
                 }
-            case THRIFT:
             case SIMPLE_NATIVE:
                 for (InetAddress address : resolveAllSpecified())
                     r.add(address.getHostName());
@@ -149,7 +147,7 @@ public class SettingsNode implements Serializable
     }
 
     // CLI Utility Methods
-    public void printSettings(MultiPrintStream out)
+    public void printSettings(ResultLogger out)
     {
         out.println("  Nodes: " + nodes);
         out.println("  Is White List: " + isWhiteList);

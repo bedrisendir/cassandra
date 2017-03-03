@@ -42,6 +42,7 @@ import java.io.IOError;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.function.Predicate;
 
 public class Verifier implements Closeable
 {
@@ -72,7 +73,7 @@ public class Verifier implements Closeable
         this.cfs = cfs;
         this.sstable = sstable;
         this.outputHandler = outputHandler;
-        this.rowIndexEntrySerializer = sstable.descriptor.version.getSSTableFormat().getIndexSerializer(sstable.metadata, sstable.descriptor.version, sstable.header);
+        this.rowIndexEntrySerializer = sstable.descriptor.version.getSSTableFormat().getIndexSerializer(cfs.metadata(), sstable.descriptor.version, sstable.header);
 
         this.controller = new VerifyController(cfs);
 
@@ -96,8 +97,7 @@ public class Verifier implements Closeable
         {
             validator = null;
 
-            if (sstable.descriptor.digestComponent != null &&
-                new File(sstable.descriptor.filenameFor(sstable.descriptor.digestComponent)).exists())
+            if (new File(sstable.descriptor.filenameFor(Component.DIGEST)).exists())
             {
                 validator = DataIntegrityMetadata.fileDigestValidator(sstable.descriptor);
                 validator.validate();
@@ -234,7 +234,7 @@ public class Verifier implements Closeable
 
     private void markAndThrow() throws IOException
     {
-        sstable.descriptor.getMetadataSerializer().mutateRepairedAt(sstable.descriptor, ActiveRepairService.UNREPAIRED_SSTABLE);
+        sstable.descriptor.getMetadataSerializer().mutateRepaired(sstable.descriptor, ActiveRepairService.UNREPAIRED_SSTABLE, sstable.getSSTableMetadata().pendingRepair);
         throw new CorruptSSTableException(new Exception(String.format("Invalid SSTable %s, please force repair", sstable.getFilename())), sstable.getFilename());
     }
 
@@ -260,7 +260,7 @@ public class Verifier implements Closeable
         {
             try
             {
-                return new CompactionInfo(sstable.metadata,
+                return new CompactionInfo(sstable.metadata(),
                                           OperationType.VERIFY,
                                           dataFile.getFilePointer(),
                                           dataFile.length(),
@@ -281,9 +281,9 @@ public class Verifier implements Closeable
         }
 
         @Override
-        public long maxPurgeableTimestamp(DecoratedKey key)
+        public Predicate<Long> getPurgeEvaluator(DecoratedKey key)
         {
-            return Long.MIN_VALUE;
+            return time -> false;
         }
     }
 }

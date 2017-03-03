@@ -18,8 +18,8 @@ from .cqlhandling import CqlParsingRuleSet, Hint
 from cassandra.metadata import maybe_escape_name
 
 
-simple_cql_types = set(('ascii', 'bigint', 'blob', 'boolean', 'counter', 'date', 'decimal', 'double', 'float', 'inet', 'int',
-                        'smallint', 'text', 'time', 'timestamp', 'timeuuid', 'tinyint', 'uuid', 'varchar', 'varint'))
+simple_cql_types = set(('ascii', 'bigint', 'blob', 'boolean', 'counter', 'date', 'decimal', 'double', 'duration', 'float',
+                        'inet', 'int', 'smallint', 'text', 'time', 'timestamp', 'timeuuid', 'tinyint', 'uuid', 'varchar', 'varint'))
 simple_cql_types.difference_update(('set', 'map', 'list'))
 
 from . import helptopics
@@ -77,6 +77,33 @@ class Cql3ParsingRuleSet(CqlParsingRuleSet):
         'LOCAL_QUORUM',
         'EACH_QUORUM',
         'SERIAL'
+    )
+
+    size_tiered_compaction_strategy_options = (
+        'min_sstable_size',
+        'min_threshold',
+        'bucket_high',
+        'bucket_low'
+    )
+
+    leveled_compaction_strategy_options = (
+        'sstable_size_in_mb',
+        'fanout_size'
+    )
+
+    date_tiered_compaction_strategy_options = (
+        'base_time_seconds',
+        'max_sstable_age_days',
+        'min_threshold',
+        'max_window_size_seconds',
+        'timestamp_resolution'
+    )
+
+    time_window_compaction_strategy_options = (
+        'compaction_window_unit',
+        'compaction_window_size',
+        'min_threshold',
+        'timestamp_resolution'
     )
 
     @classmethod
@@ -152,7 +179,7 @@ JUNK ::= /([ \t\r\f\v]+|(--|[/][/])[^\n\r]*([\n\r]|$)|[/][*].*?[*][/])/ ;
 <colon> ::=         ":" ;
 <star> ::=          "*" ;
 <endtoken> ::=      ";" ;
-<op> ::=            /[-+=,().]/ ;
+<op> ::=            /[-+=%/,().]/ ;
 <cmp> ::=           /[<>!]=?/ ;
 <brackets> ::=      /[][{}]/ ;
 
@@ -506,24 +533,13 @@ def cf_prop_val_mapkey_completer(ctxt, cass):
             return ["'class'"]
         csc = csc.split('.')[-1]
         if csc == 'SizeTieredCompactionStrategy':
-            opts.add('min_sstable_size')
-            opts.add('min_threshold')
-            opts.add('bucket_high')
-            opts.add('bucket_low')
+            opts = opts.union(set(CqlRuleSet.size_tiered_compaction_strategy_options))
         elif csc == 'LeveledCompactionStrategy':
-            opts.add('sstable_size_in_mb')
+            opts = opts.union(set(CqlRuleSet.leveled_compaction_strategy_options))
         elif csc == 'DateTieredCompactionStrategy':
-            opts.add('base_time_seconds')
-            opts.add('max_sstable_age_days')
-            opts.add('min_threshold')
-            opts.add('max_window_size_seconds')
-            opts.add('timestamp_resolution')
+            opts = opts.union(set(CqlRuleSet.date_tiered_compaction_strategy_options))
         elif csc == 'TimeWindowCompactionStrategy':
-            opts.add('compaction_window_unit')
-            opts.add('compaction_window_size')
-            opts.add('min_threshold')
-            opts.add('max_threshold')
-            opts.add('timestamp_resolution')
+            opts = opts.union(set(CqlRuleSet.time_window_compaction_strategy_options))
 
         return map(escape_value, opts)
     return ()
@@ -683,6 +699,7 @@ syntax_rules += r'''
                           ( "WHERE" <whereClause> )?
                           ( "GROUP" "BY" <groupByClause> ( "," <groupByClause> )* )?
                           ( "ORDER" "BY" <orderByClause> ( "," <orderByClause> )* )?
+                          ( "PER" "PARTITION" "LIMIT" perPartitionLimit=<wholenumber> )?
                           ( "LIMIT" limit=<wholenumber> )?
                           ( "ALLOW" "FILTERING" )?
                     ;
@@ -1359,8 +1376,7 @@ syntax_rules += r'''
 <alterTableStatement> ::= "ALTER" wat=( "COLUMNFAMILY" | "TABLE" ) cf=<columnFamilyName>
                                <alterInstructions>
                         ;
-<alterInstructions> ::= "ALTER" existcol=<cident> "TYPE" <storageType>
-                      | "ADD" newcol=<cident> <storageType> ("static")?
+<alterInstructions> ::= "ADD" newcol=<cident> <storageType> ("static")?
                       | "DROP" existcol=<cident>
                       | "WITH" <cfamProperty> ( "AND" <cfamProperty> )*
                       | "RENAME" existcol=<cident> "TO" newcol=<cident>
@@ -1370,8 +1386,7 @@ syntax_rules += r'''
 <alterUserTypeStatement> ::= "ALTER" "TYPE" ut=<userTypeName>
                                <alterTypeInstructions>
                              ;
-<alterTypeInstructions> ::= "ALTER" existcol=<cident> "TYPE" <storageType>
-                           | "ADD" newcol=<cident> <storageType>
+<alterTypeInstructions> ::= "ADD" newcol=<cident> <storageType>
                            | "RENAME" existcol=<cident> "TO" newcol=<cident>
                               ( "AND" existcol=<cident> "TO" newcol=<cident> )*
                            ;

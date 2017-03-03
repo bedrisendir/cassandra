@@ -22,8 +22,6 @@ import static org.apache.cassandra.metrics.CassandraMetricsRegistry.Metrics;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.Config.CAPIFlashCommitlogChunkManagerType;
@@ -39,6 +37,7 @@ import org.apache.cassandra.db.commitlog.capi.storage.SyncChunkManager;
 import org.apache.cassandra.db.commitlog.capi.util.CheckSummedBuffer;
 import org.apache.cassandra.metrics.DefaultNameFactory;
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.schema.TableId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -122,7 +121,7 @@ public class CAPIFlashCommitLog implements ICommitLog {
 	 * @param context
 	 *            the replay position of the flush
 	 */
-	public void discardCompletedSegments(UUID cfId, final CommitLogPosition lowerBound, CommitLogPosition upperBound) {
+	public void discardCompletedSegments(TableId cfId, final CommitLogPosition lowerBound, CommitLogPosition upperBound) {
 		// Go thru the active segment files, which are ordered oldest to
 		// newest, marking the
 		// flushed CF as clean, until we reach the segment file
@@ -203,10 +202,10 @@ public class CAPIFlashCommitLog implements ICommitLog {
 
 
 	public void forceRecycleAllSegments() {
-		forceRecycleAllSegments(Collections.<UUID> emptyList());
+		forceRecycleAllSegments(Collections.<TableId> emptyList());
 	}
 
-	public void forceRecycleAllSegments(Iterable<UUID> droppedCfs) {
+	public void forceRecycleAllSegments(Iterable<TableId> droppedCfs) {
 		fsm.forceRecycleAll(droppedCfs);
 	}
 

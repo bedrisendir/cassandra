@@ -33,12 +33,14 @@ import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
 import org.apache.cassandra.serializers.CollectionSerializer;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
  * The abstract validator that is the base for maps, sets and lists (both frozen and non-frozen).
  *
- * Please note that this comparator shouldn't be used "manually" (through thrift for instance).
+ * Please note that this comparator shouldn't be used "manually" (as a custom
+ * type for instance).
  */
 public abstract class CollectionType<T> extends AbstractType<T>
 {
@@ -144,7 +146,7 @@ public abstract class CollectionType<T> extends AbstractType<T>
         return values.size();
     }
 
-    public ByteBuffer serializeForNativeProtocol(Iterator<Cell> cells, int version)
+    public ByteBuffer serializeForNativeProtocol(Iterator<Cell> cells, ProtocolVersion version)
     {
         assert isMultiCell();
         List<ByteBuffer> values = serializedValues(cells);

@@ -26,7 +26,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
@@ -37,13 +36,13 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
-import org.apache.cassandra.db.commitlog.capi.storage.ChunkManager;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -188,11 +187,11 @@ public class FlashSegmentManager {
 		final CommitLogPosition maxReplayPosition = segments.get(segments.size() - 1).getContext();
 		// a map of CfId -> forceFlush() to ensure we only queue one flush per
 		// cf
-		final Map<UUID, ListenableFuture<?>> flushes = new LinkedHashMap<>();
+		final Map<TableId, ListenableFuture<?>> flushes = new LinkedHashMap<>();
 		for (FlashSegment segment : segments) {
-			for (UUID dirtyCFId : segment.getDirtyCFIDs()) {
-				Pair<String, String> pair = Schema.instance.getCF(dirtyCFId);
-				if (pair == null) {
+			for (TableId dirtyCFId : segment.getDirtyCFIDs()) {
+				TableMetadata metadata = Schema.instance.getTableMetadata(dirtyCFId);
+				if (metadata == null) {
 					// even though we remove the schema entry before a final
 					// flush when dropping a CF,
 					// it's still possible for a writer to race and finish his
@@ -200,7 +199,7 @@ public class FlashSegmentManager {
 					logger.error("Marking clean CF {} that doesn't exist anymore", dirtyCFId);
 					segment.markClean(dirtyCFId, CommitLogPosition.NONE, segment.getContext());
 				} else if (!flushes.containsKey(dirtyCFId)) {
-					String keyspace = pair.left;
+					String keyspace = metadata.keyspace;
 					final ColumnFamilyStore cfs = Keyspace.open(keyspace).getColumnFamilyStore(dirtyCFId);
 					// can safely call forceFlush here as we will only ever
 					// block (briefly) for other attempts to flush,
@@ -214,7 +213,7 @@ public class FlashSegmentManager {
 		return Futures.allAsList(flushes.values());
 	}
 
-	public void forceRecycleAll(Iterable<UUID> droppedCfs) {
+	public void forceRecycleAll(Iterable<TableId> droppedCfs) {
 		// TODO
 	}
 	public void printFields(Object obj) throws Exception {

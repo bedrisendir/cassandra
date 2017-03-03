@@ -32,7 +32,6 @@ import java.util.zip.CRC32;
 
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.Mutation;
@@ -43,6 +42,8 @@ import org.apache.cassandra.db.rows.SerializationHelper;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.RebufferingInputStream;
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.schema.TableId;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.WrappedRunnable;
 import org.cliffc.high_scale_lib.NonBlockingHashSet;
@@ -58,9 +59,9 @@ public class FlashBulkReplayer {
 	private static final int MAX_OUTSTANDING_REPLAY_COUNT = 2 * 1024 * 1024;
 	private final Set<Keyspace> keyspacesRecovered;
 	private final List<Future<?>> futures;
-	private final Map<UUID, AtomicInteger> invalidMutations;
+	private final Map<TableId, AtomicInteger> invalidMutations;
 	private final AtomicInteger replayedCount;
-	private final Map<UUID, CommitLogPosition> cfPositions;
+	private final Map<TableId, CommitLogPosition> cfPositions;
 	private final CommitLogPosition globalPosition;
 	private final CRC32 checksum;
 	private ByteBuffer buffer;
@@ -72,12 +73,12 @@ public class FlashBulkReplayer {
 		this.keyspacesRecovered = new NonBlockingHashSet<Keyspace>();
 		this.futures = new ArrayList<Future<?>>();
 		buffer = ByteBuffer.allocate(FlashSegmentManager.BLOCKS_IN_SEG * 4096);
-		this.invalidMutations = new HashMap<UUID, AtomicInteger>();
+		this.invalidMutations = new HashMap<TableId, AtomicInteger>();
 		this.replayedCount = new AtomicInteger();
 		this.checksum = new CRC32();
 
 		// compute per-CF and global replay positions
-		cfPositions = new HashMap<UUID, CommitLogPosition>();
+		cfPositions = new HashMap<TableId, CommitLogPosition>();
 		Ordering<CommitLogPosition> replayPositionOrdering = Ordering.from(CommitLogPosition.comparator);
 		for (ColumnFamilyStore cfs : ColumnFamilyStore.all()) {
 			// it's important to call RP.gRP per-cf, before aggregating all the
@@ -89,11 +90,11 @@ public class FlashBulkReplayer {
 			CommitLogPosition rp = CommitLogPosition.NONE;
 			// but, if we've truncted the cf in question, then we need to need
 			// to start replay after the truncation
-			CommitLogPosition truncatedAt = SystemKeyspace.getTruncatedPosition(cfs.metadata.cfId);
+			CommitLogPosition truncatedAt = SystemKeyspace.getTruncatedPosition(cfs.metadata.id);
 			if (truncatedAt != null) {
 				rp = replayPositionOrdering.max(Arrays.asList(rp, truncatedAt));
 			}
-			cfPositions.put(cfs.metadata.cfId, rp);
+			cfPositions.put(cfs.metadata.id, rp);
 		}
 		globalPosition = replayPositionOrdering.min(cfPositions.values());
 		logger.debug("Global replay position is {} from columnfamilies {}" + globalPosition + "--- "
@@ -196,15 +197,15 @@ public class FlashBulkReplayer {
 				Runnable runnable = new WrappedRunnable() {
 					@Override
 					protected void runMayThrow() throws Exception {
-						if (Schema.instance.getKSMetaData(rm.getKeyspaceName()) == null)
+						if (Schema.instance.getKeyspaceMetadata(rm.getKeyspaceName()) == null)
 							return;
 						final Keyspace keyspace = Keyspace.open(rm.getKeyspaceName());
 						Mutation newRm = null;
 						for (PartitionUpdate columnFamily : rm.getPartitionUpdates()) {
-							//if (Schema.instance.getCF(columnFamily.id()) == null)
+							//if (Schema.instance.getCF(columTableIdnFamily.id()) == null)
 							//	continue; // dropped
 
-							CommitLogPosition rp = cfPositions.get(columnFamily.metadata().cfId);
+							CommitLogPosition rp = cfPositions.get(columnFamily.metadata().id);
 							if(rp==null){
 								System.err.println("rp null");
 								continue;
@@ -242,7 +243,7 @@ public class FlashBulkReplayer {
 	}
 
 	public int blockForWrites() {
-		for (Map.Entry<UUID, AtomicInteger> entry : invalidMutations.entrySet()) {
+		for (Map.Entry<TableId, AtomicInteger> entry : invalidMutations.entrySet()) {
 			logger.debug(String.format("Skipped %d mutations from unknown (probably removed) CF with id %s",
 					entry.getValue().intValue(), entry.getKey()));
 		}

@@ -15,7 +15,7 @@
 # limitations under the License.
 
 # to configure behavior, define $CQL_TEST_HOST to the destination address
-# for Thrift connections, and $CQL_TEST_PORT to the associated port.
+# and $CQL_TEST_PORT to the associated port.
 
 from __future__ import with_statement
 
@@ -615,7 +615,7 @@ class TestCqlshOutput(BaseTestCase):
                 AND cdc = false
                 AND comment = ''
                 AND compaction = {'class': 'org.apache.cassandra.db.compaction.SizeTieredCompactionStrategy', 'max_threshold': '32', 'min_threshold': '4'}
-                AND compression = {'chunk_length_in_kb': '64', 'class': 'org.apache.cassandra.io.compress.LZ4Compressor'}
+                AND compression = {'chunk_length_in_kb': '64', 'class': 'org.apache.cassandra.io.compress.LZ4Compressor', 'min_compress_ratio': '1.1'}
                 AND crc_check_chance = 1.0
                 AND dclocal_read_repair_chance = 0.1
                 AND default_time_to_live = 0
@@ -837,6 +837,21 @@ class TestCqlshOutput(BaseTestCase):
             ("select tags from songs;", r"""
              tags
              MMMM
+            -------------------------------------------------
+
+             {tags: {'genre': 'metal', 'origin': 'england'}}
+             BYYYYBBBYYYYYYYBBYYYYYYYBBYYYYYYYYBBYYYYYYYYYBB
+
+
+            (1 rows)
+            nnnnnnnn
+            """),
+        ))
+
+        self.assertQueriesGiveColoredOutput((
+            ("select tags as my_tags from songs;", r"""
+             my_tags
+             MMMMMMM
             -------------------------------------------------
 
              {tags: {'genre': 'metal', 'origin': 'england'}}

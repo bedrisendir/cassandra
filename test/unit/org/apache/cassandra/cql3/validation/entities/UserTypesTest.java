@@ -48,6 +48,17 @@ public class UserTypesTest extends CQLTester
     }
 
     @Test
+    public void testInvalidInputForUserType() throws Throwable
+    {
+        String myType = createType("CREATE TYPE %s (f int)");
+        createTable("CREATE TABLE %s(pk int PRIMARY KEY, t frozen<" + myType + ">)");
+        assertInvalidMessage("Not enough bytes to read 0th component",
+                             "INSERT INTO %s (pk, t) VALUES (?, ?)", 1, "test");
+        assertInvalidMessage("Not enough bytes to read 0th component",
+                             "INSERT INTO %s (pk, t) VALUES (?, ?)", 1, Long.MAX_VALUE);
+    }
+
+    @Test
     public void testCassandra8105() throws Throwable
     {
         String ut1 = createType("CREATE TYPE %s (a int, b int)");
@@ -600,7 +611,6 @@ public class UserTypesTest extends CQLTester
     private void assertInvalidAlterDropStatements(String t) throws Throwable
     {
         assertInvalidMessage("Cannot alter user type " + typeWithKs(t), "ALTER TYPE " + typeWithKs(t) + " RENAME foo TO bar;");
-        assertInvalidMessage("Cannot alter user type " + typeWithKs(t), "ALTER TYPE " + typeWithKs(t) + " ALTER foo TYPE text;");
         assertInvalidMessage("Cannot drop user type " + typeWithKs(t), "DROP TYPE " + typeWithKs(t) + ';');
     }
 

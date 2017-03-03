@@ -19,12 +19,13 @@ package org.apache.cassandra.cql3.selection;
 
 import java.nio.ByteBuffer;
 
-import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.cql3.ColumnSpecification;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.Term;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.exceptions.InvalidRequestException;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * Selector representing a simple term (literals or bound variables).
@@ -53,7 +54,7 @@ public class TermSelector extends Selector
 
             protected void addColumnMapping(SelectionColumnMapping mapping, ColumnSpecification resultColumn)
             {
-               mapping.addMapping(resultColumn, (ColumnDefinition)null);
+               mapping.addMapping(resultColumn, (ColumnMetadata)null);
             }
 
             public Selector newInstance(QueryOptions options)
@@ -69,11 +70,11 @@ public class TermSelector extends Selector
         this.type = type;
     }
 
-    public void addInput(int protocolVersion, Selection.ResultSetBuilder rs) throws InvalidRequestException
+    public void addInput(ProtocolVersion protocolVersion, Selection.ResultSetBuilder rs) throws InvalidRequestException
     {
     }
 
-    public ByteBuffer getOutput(int protocolVersion) throws InvalidRequestException
+    public ByteBuffer getOutput(ProtocolVersion protocolVersion) throws InvalidRequestException
     {
         return value;
     }

@@ -22,18 +22,18 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.cassandra.config.CFMetaData;
-import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.utils.IntegerInterval;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.schema.Schema;
+import org.apache.cassandra.schema.TableId;
+import org.apache.cassandra.schema.TableMetadata;
 import org.cliffc.high_scale_lib.NonBlockingHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,10 +46,10 @@ public class FlashSegment {
 	static final Logger logger = LoggerFactory.getLogger(FlashSegment.class);
 	
 	 // a map of Cf->dirty interval in this segment; if interval is not covered by the clean set, the log contains unflushed data
-    private final NonBlockingHashMap<UUID, IntegerInterval> cfDirty = new NonBlockingHashMap<>(1024);
+    private final NonBlockingHashMap<TableId, IntegerInterval> cfDirty = new NonBlockingHashMap<>(1024);
 
     // a map of Cf->clean intervals; separate map from above to permit marking Cfs clean whilst the log is still in use
-    private final ConcurrentHashMap<UUID, IntegerInterval.Set> cfClean = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<TableId, IntegerInterval.Set> cfClean = new ConcurrentHashMap<>();
 
 	// create a unique id per segment
 	private final static long idBase = System.currentTimeMillis();
@@ -116,11 +116,11 @@ public class FlashSegment {
     
 	public void markDirty(Mutation mutation, int allocatedPosition) {
 		for (PartitionUpdate update : mutation.getPartitionUpdates())
-            coverInMap(cfDirty, update.metadata().cfId, allocatedPosition);
+            coverInMap(cfDirty, update.metadata().id, allocatedPosition);
 	}
 	
 
-	public synchronized void markClean(UUID cfId, CommitLogPosition startPosition, CommitLogPosition endPosition) {
+	public synchronized void markClean(TableId cfId, CommitLogPosition startPosition, CommitLogPosition endPosition) {
         if (startPosition.segmentId > id || endPosition.segmentId < id)
             return;
         if (!cfDirty.containsKey(cfId))
@@ -131,11 +131,11 @@ public class FlashSegment {
     
         cfClean.computeIfAbsent(cfId, k -> new IntegerInterval.Set()).add(start, end);
         
-        Iterator<Map.Entry<UUID, IntegerInterval.Set>> iter = cfClean.entrySet().iterator();
+        Iterator<Map.Entry<TableId, IntegerInterval.Set>> iter = cfClean.entrySet().iterator();
         while (iter.hasNext())
         {
-            Map.Entry<UUID, IntegerInterval.Set> clean = iter.next();
-            UUID xcfId = clean.getKey();
+            Map.Entry<TableId, IntegerInterval.Set> clean = iter.next();
+            TableId xcfId = clean.getKey();
             IntegerInterval.Set cleanSet = clean.getValue();
             IntegerInterval dirtyInterval = cfDirty.get(xcfId);
             if (dirtyInterval != null && cleanSet.covers(dirtyInterval))
@@ -157,15 +157,15 @@ public class FlashSegment {
     /**
      * @return a collection of dirty CFIDs for this segment.
      */
-    public synchronized Collection<UUID> getDirtyCFIDs()
+    public synchronized Collection<TableId> getDirtyCFIDs()
     {
         if (cfClean.isEmpty() || cfDirty.isEmpty())
             return cfDirty.keySet();
 
-        List<UUID> r = new ArrayList<>(cfDirty.size());
-        for (Map.Entry<UUID, IntegerInterval> dirty : cfDirty.entrySet())
+        List<TableId> r = new ArrayList<>(cfDirty.size());
+        for (Map.Entry<TableId, IntegerInterval> dirty : cfDirty.entrySet())
         {
-            UUID cfId = dirty.getKey();
+        	TableId cfId = dirty.getKey();
             IntegerInterval dirtyInterval = dirty.getValue();
             IntegerInterval.Set cleanSet = cfClean.get(cfId);
             if (cleanSet == null || !cleanSet.covers(dirtyInterval))
@@ -182,9 +182,9 @@ public class FlashSegment {
 	 */
 	public String dirtyString() {
 		StringBuilder sb = new StringBuilder();
-		for (UUID cfId : getDirtyCFIDs()) {
-			CFMetaData m = Schema.instance.getCFMetaData(cfId);
-			sb.append(m == null ? "<deleted>" : m.cfName).append(" (")
+		for (TableId cfId : getDirtyCFIDs()) {
+			TableMetadata m = Schema.instance.getTableMetadata(cfId);
+			sb.append(m == null ? "<deleted>" : m.name).append(" (")
 					.append(cfId).append("), ");
 		}
 		return sb.toString();

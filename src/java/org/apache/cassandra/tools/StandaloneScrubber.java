@@ -28,7 +28,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.commons.cli.*;
 
-import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.Keyspace;
@@ -61,7 +61,7 @@ public class StandaloneScrubber
             // load keyspace descriptions.
             Schema.instance.loadFromDisk(false);
 
-            if (Schema.instance.getKSMetaData(options.keyspaceName) == null)
+            if (Schema.instance.getKeyspaceMetadata(options.keyspaceName) == null)
                 throw new IllegalArgumentException(String.format("Unknown keyspace %s", options.keyspaceName));
 
             // Do not load sstables since they might be broken
@@ -177,12 +177,12 @@ public class StandaloneScrubber
             List<SSTableReader> repaired = Lists.newArrayList(Iterables.filter(sstables, repairedPredicate));
             List<SSTableReader> unRepaired = Lists.newArrayList(Iterables.filter(sstables, Predicates.not(repairedPredicate)));
 
-            LeveledManifest repairedManifest = LeveledManifest.create(cfs, maxSizeInMB, repaired);
+            LeveledManifest repairedManifest = LeveledManifest.create(cfs, maxSizeInMB, cfs.getLevelFanoutSize(), repaired);
             for (int i = 1; i < repairedManifest.getLevelCount(); i++)
             {
                 repairedManifest.repairOverlappingSSTables(i);
             }
-            LeveledManifest unRepairedManifest = LeveledManifest.create(cfs, maxSizeInMB, unRepaired);
+            LeveledManifest unRepairedManifest = LeveledManifest.create(cfs, maxSizeInMB, cfs.getLevelFanoutSize(), unRepaired);
             for (int i = 1; i < unRepairedManifest.getLevelCount(); i++)
             {
                 unRepairedManifest.repairOverlappingSSTables(i);

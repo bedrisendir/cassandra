@@ -40,16 +40,17 @@ import Parser,Lexer;
     import java.util.Set;
 
     import org.apache.cassandra.auth.*;
-    import org.apache.cassandra.config.ColumnDefinition;
     import org.apache.cassandra.cql3.*;
-    import org.apache.cassandra.cql3.restrictions.CustomIndexExpression;
-    import org.apache.cassandra.cql3.statements.*;
-    import org.apache.cassandra.cql3.selection.*;
+    import org.apache.cassandra.cql3.conditions.*;
     import org.apache.cassandra.cql3.functions.*;
+    import org.apache.cassandra.cql3.restrictions.CustomIndexExpression;
+    import org.apache.cassandra.cql3.selection.*;
+    import org.apache.cassandra.cql3.statements.*;
     import org.apache.cassandra.db.marshal.CollectionType;
     import org.apache.cassandra.exceptions.ConfigurationException;
     import org.apache.cassandra.exceptions.InvalidRequestException;
     import org.apache.cassandra.exceptions.SyntaxException;
+    import org.apache.cassandra.schema.ColumnMetadata;
     import org.apache.cassandra.utils.Pair;
 }
 
@@ -72,6 +73,23 @@ import Parser,Lexer;
     protected void addRecognitionError(String msg)
     {
         gParser.addRecognitionError(msg);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Recovery methods are overridden to avoid wasting work on recovering from errors when the result will be
+    // ignored anyway.
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    @Override
+    protected Object recoverFromMismatchedToken(IntStream input, int ttype, BitSet follow) throws RecognitionException
+    {
+        throw new MismatchedTokenException(ttype, input);
+    }
+
+    @Override
+    public void recover(IntStream input, RecognitionException re)
+    {
+        // Do nothing.
     }
 }
 

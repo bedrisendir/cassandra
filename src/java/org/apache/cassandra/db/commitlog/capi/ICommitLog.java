@@ -22,6 +22,7 @@ import java.util.UUID;
 
 import org.apache.cassandra.db.Mutation;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.schema.TableId;
 
 public interface ICommitLog {
 
@@ -33,9 +34,9 @@ public interface ICommitLog {
 
 	void shutdownBlocking() throws InterruptedException;
 
-	void discardCompletedSegments(UUID cfId, CommitLogPosition commitLogLowerBound, CommitLogPosition commitLogUpperBound);
+	void discardCompletedSegments(TableId id, CommitLogPosition commitLogLowerBound, CommitLogPosition commitLogUpperBound);
 
-	void forceRecycleAllSegments(Iterable<UUID> droppedCfs);
+	void forceRecycleAllSegments(Iterable<TableId> droppedCfs);
 
 	void await();
 

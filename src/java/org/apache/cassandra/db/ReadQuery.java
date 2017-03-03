@@ -23,6 +23,7 @@ import org.apache.cassandra.exceptions.RequestExecutionException;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.pager.QueryPager;
 import org.apache.cassandra.service.pager.PagingState;
+import org.apache.cassandra.transport.ProtocolVersion;
 
 /**
  * Generic abstraction for read queries.
@@ -52,7 +53,7 @@ public interface ReadQuery
 
         public UnfilteredPartitionIterator executeLocally(ReadExecutionController executionController)
         {
-            return EmptyIterators.unfilteredPartition(executionController.metaData(), false);
+            return EmptyIterators.unfilteredPartition(executionController.metadata());
         }
 
         public DataLimits limits()
@@ -63,7 +64,7 @@ public interface ReadQuery
             return DataLimits.cqlLimits(0);
         }
 
-        public QueryPager getPager(PagingState state, int protocolVersion)
+        public QueryPager getPager(PagingState state, ProtocolVersion protocolVersion)
         {
             return QueryPager.EMPTY;
         }
@@ -113,7 +114,7 @@ public interface ReadQuery
      * Execute the query locally. This is similar to {@link ReadQuery#executeInternal(ReadExecutionController)}
      * but it returns an unfiltered partition iterator that can be merged later on.
      *
-     * @param controller the {@code ReadExecutionController} protecting the read.
+     * @param executionController the {@code ReadExecutionController} protecting the read.
      * @return the result of the read query.
      */
     public UnfilteredPartitionIterator executeLocally(ReadExecutionController executionController);
@@ -127,7 +128,7 @@ public interface ReadQuery
      *
      * @return a pager for the query.
      */
-    public QueryPager getPager(PagingState pagingState, int protocolVersion);
+    public QueryPager getPager(PagingState pagingState, ProtocolVersion protocolVersion);
 
     /**
      * The limits for the query.

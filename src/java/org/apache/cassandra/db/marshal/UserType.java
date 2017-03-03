@@ -28,7 +28,8 @@ import org.apache.cassandra.db.rows.Cell;
 import org.apache.cassandra.db.rows.CellPath;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.SyntaxException;
-import org.apache.cassandra.serializers.*;
+import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.Pair;
 import org.slf4j.Logger;
@@ -83,6 +84,11 @@ public class UserType extends TupleType
     public boolean isUDT()
     {
         return true;
+    }
+
+    public boolean isTuple()
+    {
+        return false;
     }
 
     @Override
@@ -143,7 +149,7 @@ public class UserType extends TupleType
         return ShortType.instance;
     }
 
-    public ByteBuffer serializeForNativeProtocol(Iterator<Cell> cells, int protocolVersion)
+    public ByteBuffer serializeForNativeProtocol(Iterator<Cell> cells, ProtocolVersion protocolVersion)
     {
         assert isMultiCell;
 
@@ -168,6 +174,21 @@ public class UserType extends TupleType
         return TupleType.buildValue(components);
     }
 
+    public void validateCell(Cell cell) throws MarshalException
+    {
+        if (isMultiCell)
+        {
+            ByteBuffer path = cell.path().get(0);
+            nameComparator().validate(path);
+            Short fieldPosition = nameComparator().getSerializer().deserialize(path);
+            fieldType(fieldPosition).validate(cell.value());
+        }
+        else
+        {
+            validate(cell.value());
+        }
+    }
+
     // Note: the only reason we override this is to provide nicer error message, but since that's not that much code...
     @Override
     public void validate(ByteBuffer bytes) throws MarshalException
@@ -180,7 +201,7 @@ public class UserType extends TupleType
                 return;
 
             if (input.remaining() < 4)
-                throw new MarshalException(String.format("Not enough bytes to read size of %dth field %s", i, fieldName(i)));
+                throw new MarshalException(String.format("Not enough bytes to read size of %dth field %s", i, fieldNameAsString(i)));
 
             int size = input.getInt();
 
@@ -189,7 +210,7 @@ public class UserType extends TupleType
                 continue;
 
             if (input.remaining() < size)
-                throw new MarshalException(String.format("Not enough bytes to read %dth field %s", i, fieldName(i)));
+                throw new MarshalException(String.format("Not enough bytes to read %dth field %s", i, fieldNameAsString(i)));
 
             ByteBuffer field = ByteBufferUtil.readBytes(input, size);
             types.get(i).validate(field);
@@ -249,7 +270,7 @@ public class UserType extends TupleType
     }
 
     @Override
-    public String toJSONString(ByteBuffer buffer, int protocolVersion)
+    public String toJSONString(ByteBuffer buffer, ProtocolVersion protocolVersion)
     {
         ByteBuffer[] buffers = split(buffer);
         StringBuilder sb = new StringBuilder("{");
@@ -379,6 +400,12 @@ public class UserType extends TupleType
     }
 
     @Override
+    public boolean referencesDuration()
+    {
+        return fieldTypes().stream().anyMatch(f -> f.referencesDuration());
+    }
+
+    @Override
     public String toString()
     {
         return this.toString(false);
@@ -397,5 +424,10 @@ public class UserType extends TupleType
         if (includeFrozenType)
             sb.append(")");
         return sb.toString();
+    }
+
+    public String toCQLString()
+    {
+        return String.format("%s.%s", ColumnIdentifier.maybeQuote(keyspace), ColumnIdentifier.maybeQuote(getNameAsString()));
     }
 }

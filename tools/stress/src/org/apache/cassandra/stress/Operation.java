@@ -20,12 +20,10 @@ package org.apache.cassandra.stress;
 
 import java.io.IOException;
 
+import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.SettingsLog;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.JavaDriverClient;
-import org.apache.cassandra.stress.util.ThriftClient;
-import org.apache.cassandra.stress.util.Timer;
-import org.apache.cassandra.thrift.InvalidRequestException;
 import org.apache.cassandra.transport.SimpleClient;
 
 public abstract class Operation
@@ -52,13 +50,6 @@ public abstract class Operation
     {
         return false;
     }
-
-    /**
-     * Run operation
-     * @param client Cassandra Thrift client connection
-     * @throws IOException on any I/O error.
-     */
-    public abstract void run(ThriftClient client) throws IOException;
 
     public void run(SimpleClient client) throws IOException
     {
@@ -106,7 +97,7 @@ public abstract class Operation
                 exceptionMessage = getExceptionMessage(e);
             }
         }
-        
+
         timer.stop(run.partitionCount(), run.rowCount(), !success);
 
         if (!success)
@@ -126,7 +117,7 @@ public abstract class Operation
     protected String getExceptionMessage(Exception e)
     {
         String className = e.getClass().getSimpleName();
-        String message = (e instanceof InvalidRequestException) ? ((InvalidRequestException) e).getWhy() : e.getMessage();
+        String message = e.getMessage();
         return (message == null) ? "(" + className + ")" : String.format("(%s): %s", className, message);
     }
 
@@ -136,11 +127,6 @@ public abstract class Operation
             throw new IOException(message);
         else if (settings.log.level.compareTo(SettingsLog.Level.MINIMAL) > 0)
             System.err.println(message);
-    }
-
-    public void close()
-    {
-        timer.close();
     }
 
     public void intendedStartNs(long intendedTime)

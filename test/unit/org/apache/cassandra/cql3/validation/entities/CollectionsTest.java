@@ -17,11 +17,7 @@
  */
 package org.apache.cassandra.cql3.validation.entities;
 
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.Arrays;
-import java.util.UUID;
+import java.util.*;
 
 import org.junit.Test;
 
@@ -118,6 +114,19 @@ public class CollectionsTest extends CQLTester
                    row(set("v7"))
         );
 
+        execute("UPDATE %s SET s += ? WHERE k = 0", set("v5"));
+        execute("UPDATE %s SET s += ? WHERE k = 0", set("v6"));
+
+        assertRows(execute("SELECT s FROM %s WHERE k = 0"),
+                   row(set("v5", "v6", "v7"))
+        );
+
+        execute("UPDATE %s SET s -= ? WHERE k = 0", set("v6", "v5"));
+
+        assertRows(execute("SELECT s FROM %s WHERE k = 0"),
+                   row(set("v7"))
+        );
+
         execute("DELETE s[?] FROM %s WHERE k = 0", set("v7"));
 
         // Deleting an element that does not exist will succeed
@@ -166,7 +175,19 @@ public class CollectionsTest extends CQLTester
                    row(map("v5", 5, "v6", 6, "v7", 7))
         );
 
-        execute("DELETE m[?] FROM %s WHERE k = 0", "v7");
+        execute("UPDATE %s SET m = m - ? WHERE k = 0", set("v7"));
+
+        assertRows(execute("SELECT m FROM %s WHERE k = 0"),
+                   row(map("v5", 5, "v6", 6))
+        );
+
+        execute("UPDATE %s SET m += ? WHERE k = 0", map("v7", 7));
+
+        assertRows(execute("SELECT m FROM %s WHERE k = 0"),
+                   row(map("v5", 5, "v6", 6, "v7", 7))
+        );
+
+        execute("UPDATE %s SET m -= ? WHERE k = 0", set("v7"));
 
         assertRows(execute("SELECT m FROM %s WHERE k = 0"),
                    row(map("v5", 5, "v6", 6))
@@ -233,6 +254,14 @@ public class CollectionsTest extends CQLTester
         execute("UPDATE %s SET l = l - ? WHERE k = 0", list("v5", "v8"));
 
         assertRows(execute("SELECT l FROM %s WHERE k = 0"), row(list("v9", "v6", "v7")));
+
+        execute("UPDATE %s SET l += ? WHERE k = 0", list("v8"));
+
+        assertRows(execute("SELECT l FROM %s WHERE k = 0"), row(list("v9", "v6", "v7", "v8")));
+
+        execute("UPDATE %s SET l -= ? WHERE k = 0", list("v6", "v8"));
+
+        assertRows(execute("SELECT l FROM %s WHERE k = 0"), row(list("v9", "v7")));
 
         execute("DELETE l FROM %s WHERE k = 0");
 
@@ -535,16 +564,53 @@ public class CollectionsTest extends CQLTester
         assertInvalid("SELECT writetime(l) FROM %s WHERE k = 0");
     }
 
-    /**
-     * Migrated from cql_tests.py:TestCQL.bug_5376()
-     */
     @Test
-    public void testInClauseWithCollections() throws Throwable
+    public void testInRestrictionWithCollection() throws Throwable
     {
-        createTable("CREATE TABLE %s (key text, c bigint, v text, x set < text >, PRIMARY KEY(key, c) )");
+        for (boolean frozen : new boolean[]{true, false})
+        {
+            createTable(frozen ? "CREATE TABLE %s (a int, b int, c int, d frozen<list<int>>, e frozen<map<int, int>>, f frozen<set<int>>, PRIMARY KEY (a, b, c))"
+                    : "CREATE TABLE %s (a int, b int, c int, d list<int>, e map<int, int>, f set<int>, PRIMARY KEY (a, b, c))");
 
-        assertInvalid("select * from %s where key = 'foo' and c in (1,3,4)");
+            execute("INSERT INTO %s (a, b, c, d, e, f) VALUES (1, 1, 1, [1, 2], {1: 2}, {1, 2})");
+            execute("INSERT INTO %s (a, b, c, d, e, f) VALUES (1, 1, 2, [1, 3], {1: 3}, {1, 3})");
+            execute("INSERT INTO %s (a, b, c, d, e, f) VALUES (1, 1, 3, [1, 4], {1: 4}, {1, 4})");
+            execute("INSERT INTO %s (a, b, c, d, e, f) VALUES (1, 2, 3, [1, 3], {1: 3}, {1, 3})");
+            execute("INSERT INTO %s (a, b, c, d, e, f) VALUES (1, 2, 4, [1, 3], {1: 3}, {1, 3})");
+            execute("INSERT INTO %s (a, b, c, d, e, f) VALUES (2, 1, 1, [1, 2], {2: 2}, {1, 2})");
+
+            beforeAndAfterFlush(() -> {
+                assertRows(execute("SELECT * FROM %s WHERE a in (1,2)"),
+                           row(1, 1, 1, list(1, 2), map(1, 2), set(1, 2)),
+                           row(1, 1, 2, list(1, 3), map(1, 3), set(1, 3)),
+                           row(1, 1, 3, list(1, 4), map(1, 4), set(1, 4)),
+                           row(1, 2, 3, list(1, 3), map(1, 3), set(1, 3)),
+                           row(1, 2, 4, list(1, 3), map(1, 3), set(1, 3)),
+                           row(2, 1, 1, list(1, 2), map(2, 2), set(1, 2)));
+
+                assertRows(execute("SELECT * FROM %s WHERE a = 1 AND b IN (1,2)"),
+                           row(1, 1, 1, list(1, 2), map(1, 2), set(1, 2)),
+                           row(1, 1, 2, list(1, 3), map(1, 3), set(1, 3)),
+                           row(1, 1, 3, list(1, 4), map(1, 4), set(1, 4)),
+                           row(1, 2, 3, list(1, 3), map(1, 3), set(1, 3)),
+                           row(1, 2, 4, list(1, 3), map(1, 3), set(1, 3)));
+
+                assertRows(execute("SELECT * FROM %s WHERE a = 1 AND b = 1 AND c in (1,2)"),
+                           row(1, 1, 1, list(1, 2), map(1, 2), set(1, 2)),
+                           row(1, 1, 2, list(1, 3), map(1, 3), set(1, 3)));
+
+                assertRows(execute("SELECT * FROM %s WHERE a = 1 AND b IN (1, 2) AND c in (1,2,3)"),
+                           row(1, 1, 1, list(1, 2), map(1, 2), set(1, 2)),
+                           row(1, 1, 2, list(1, 3), map(1, 3), set(1, 3)),
+                           row(1, 1, 3, list(1, 4), map(1, 4), set(1, 4)),
+                           row(1, 2, 3, list(1, 3), map(1, 3), set(1, 3)));
+
+                assertRows(execute("SELECT * FROM %s WHERE a = 1 AND b IN (1, 2) AND c in (1,2,3) AND d CONTAINS 4 ALLOW FILTERING"),
+                           row(1, 1, 3, list(1, 4), map(1, 4), set(1, 4)));
+            });
+        }
     }
+
 
     /**
      * Test for bug #5795,
@@ -863,5 +929,47 @@ public class CollectionsTest extends CQLTester
 
          execute("UPDATE %s SET l[0] = null WHERE k=0");
          assertRows(execute("SELECT * FROM %s"), row(0, list(2, 3)));
+    }
+
+    @Test
+    public void testInvalidInputForList() throws Throwable
+    {
+        createTable("CREATE TABLE %s(pk int PRIMARY KEY, l list<text>)");
+        assertInvalidMessage("Not enough bytes to read a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, "test");
+        assertInvalidMessage("Not enough bytes to read a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, Long.MAX_VALUE);
+        assertInvalidMessage("Not enough bytes to read a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, "");
+        assertInvalidMessage("The data cannot be deserialized as a list",
+                             "INSERT INTO %s (pk, l) VALUES (?, ?)", 1, -1);
+    }
+
+    @Test
+    public void testInvalidInputForSet() throws Throwable
+    {
+        createTable("CREATE TABLE %s(pk int PRIMARY KEY, s set<text>)");
+        assertInvalidMessage("Not enough bytes to read a set",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, "test");
+        assertInvalidMessage("String didn't validate.",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, Long.MAX_VALUE);
+        assertInvalidMessage("Not enough bytes to read a set",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, "");
+        assertInvalidMessage("The data cannot be deserialized as a set",
+                             "INSERT INTO %s (pk, s) VALUES (?, ?)", 1, -1);
+    }
+
+    @Test
+    public void testInvalidInputForMap() throws Throwable
+    {
+        createTable("CREATE TABLE %s(pk int PRIMARY KEY, m map<text, text>)");
+        assertInvalidMessage("Not enough bytes to read a map",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, "test");
+        assertInvalidMessage("String didn't validate.",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, Long.MAX_VALUE);
+        assertInvalidMessage("Not enough bytes to read a map",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, "");
+        assertInvalidMessage("The data cannot be deserialized as a map",
+                             "INSERT INTO %s (pk, m) VALUES (?, ?)", 1, -1);
     }
 }

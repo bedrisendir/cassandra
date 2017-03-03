@@ -23,7 +23,7 @@ import java.util.concurrent.Callable;
 import java.util.function.BiFunction;
 
 import org.apache.cassandra.Util;
-import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.RowFilter;
@@ -46,11 +46,14 @@ import org.apache.cassandra.utils.concurrent.OpOrder;
  */
 public class StubIndex implements Index
 {
+    public volatile int beginCalls;
+    public volatile int finishCalls;
     public List<DeletionTime> partitionDeletions = new ArrayList<>();
     public List<RangeTombstone> rangeTombstones = new ArrayList<>();
     public List<Row> rowsInserted = new ArrayList<>();
     public List<Row> rowsDeleted = new ArrayList<>();
     public List<Pair<Row,Row>> rowsUpdated = new ArrayList<>();
+    public volatile boolean preJoinInvocation;
     private IndexMetadata indexMetadata;
     private ColumnFamilyStore baseCfs;
 
@@ -74,12 +77,12 @@ public class StubIndex implements Index
         return false;
     }
 
-    public boolean dependsOn(ColumnDefinition column)
+    public boolean dependsOn(ColumnMetadata column)
     {
         return false;
     }
 
-    public boolean supportsExpression(ColumnDefinition column, Operator operator)
+    public boolean supportsExpression(ColumnMetadata column, Operator operator)
     {
         return operator == Operator.EQ;
     }
@@ -95,7 +98,7 @@ public class StubIndex implements Index
     }
 
     public Indexer indexerFor(final DecoratedKey key,
-                              PartitionColumns columns,
+                              RegularAndStaticColumns columns,
                               int nowInSec,
                               OpOrder.Group opGroup,
                               IndexTransaction.Type transactionType)
@@ -104,6 +107,7 @@ public class StubIndex implements Index
         {
             public void begin()
             {
+                beginCalls++;
             }
 
             public void partitionDelete(DeletionTime deletionTime)
@@ -133,6 +137,7 @@ public class StubIndex implements Index
 
             public void finish()
             {
+                finishCalls++;
             }
         };
     }
@@ -156,7 +161,7 @@ public class StubIndex implements Index
         return Optional.empty();
     }
 
-    public Collection<ColumnDefinition> getIndexedColumns()
+    public Collection<ColumnMetadata> getIndexedColumns()
     {
         return Collections.emptySet();
     }
@@ -169,6 +174,14 @@ public class StubIndex implements Index
     public Callable<?> getTruncateTask(long truncatedAt)
     {
         return null;
+    }
+
+    public Callable<?> getPreJoinTask(boolean hadBootstrap)
+    {
+        return () -> {
+            preJoinInvocation = true;
+            return null;
+        };
     }
 
     public Callable<?> getInvalidateTask()

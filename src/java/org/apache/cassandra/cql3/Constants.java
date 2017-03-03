@@ -17,15 +17,18 @@
  */
 package org.apache.cassandra.cql3;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.cassandra.config.ColumnDefinition;
+import org.apache.cassandra.schema.ColumnMetadata;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.transport.ProtocolVersion;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 /**
@@ -37,7 +40,54 @@ public abstract class Constants
 
     public enum Type
     {
-        STRING, INTEGER, UUID, FLOAT, BOOLEAN, HEX;
+        STRING,
+        INTEGER
+        {
+            public AbstractType<?> getPreferedTypeFor(String text)
+            {
+                // We only try to determine the smallest possible type between int, long and BigInteger
+                BigInteger b = new BigInteger(text);
+
+                if (b.equals(BigInteger.valueOf(b.intValue())))
+                    return Int32Type.instance;
+
+                if (b.equals(BigInteger.valueOf(b.longValue())))
+                    return LongType.instance;
+
+                return IntegerType.instance;
+            }
+        },
+        UUID,
+        FLOAT
+        {
+            public AbstractType<?> getPreferedTypeFor(String text)
+            {
+                if ("NaN".equals(text) || "-NaN".equals(text) || "Infinity".equals(text) || "-Infinity".equals(text))
+                    return DoubleType.instance;
+
+                // We only try to determine the smallest possible type between double and BigDecimal
+                BigDecimal b = new BigDecimal(text);
+
+                if (b.compareTo(BigDecimal.valueOf(b.doubleValue())) == 0)
+                    return DoubleType.instance;
+
+                return DecimalType.instance;
+            }
+        },
+        BOOLEAN,
+        HEX,
+        DURATION;
+
+        /**
+         * Returns the exact type for the specified text
+         *
+         * @param text the text for which the type must be determined
+         * @return the exact type or {@code null} if it is not known.
+         */
+        public AbstractType<?> getPreferedTypeFor(String text)
+        {
+            return null;
+        }
     }
 
     private static class UnsetLiteral extends Term.Raw
@@ -118,12 +168,14 @@ public abstract class Constants
     {
         private final Type type;
         private final String text;
+        private final AbstractType<?> preferedType;
 
         private Literal(Type type, String text)
         {
             assert type != null && text != null;
             this.type = type;
             this.text = text;
+            this.preferedType = type.getPreferedTypeFor(text);
         }
 
         public static Literal string(String text)
@@ -154,6 +206,11 @@ public abstract class Constants
         public static Literal hex(String text)
         {
             return new Literal(Type.HEX, text);
+        }
+
+        public static Literal duration(String text)
+        {
+            return new Literal(Type.DURATION, text);
         }
 
         public Value prepare(String keyspace, ColumnSpecification receiver) throws InvalidRequestException
@@ -198,6 +255,11 @@ public abstract class Constants
                 return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
 
             CQL3Type.Native nt = (CQL3Type.Native)receiverType;
+
+            // If the receiver type match the prefered type we can straight away return an exact match
+            if (nt.getType().equals(preferedType))
+                return AssignmentTestable.TestResult.EXACT_MATCH;
+
             switch (type)
             {
                 case STRING:
@@ -221,6 +283,7 @@ public abstract class Constants
                         case DATE:
                         case DECIMAL:
                         case DOUBLE:
+                        case DURATION:
                         case FLOAT:
                         case INT:
                         case SMALLINT:
@@ -262,6 +325,13 @@ public abstract class Constants
                             return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
                     }
                     break;
+                case DURATION:
+                    switch (nt)
+                    {
+                        case DURATION:
+                            return AssignmentTestable.TestResult.WEAKLY_ASSIGNABLE;
+                    }
+                    break;
             }
             return AssignmentTestable.TestResult.NOT_ASSIGNABLE;
         }
@@ -299,7 +369,7 @@ public abstract class Constants
             this.bytes = bytes;
         }
 
-        public ByteBuffer get(int protocolVersion)
+        public ByteBuffer get(ProtocolVersion protocolVersion)
         {
             return bytes;
         }
@@ -354,7 +424,7 @@ public abstract class Constants
 
     public static class Setter extends Operation
     {
-        public Setter(ColumnDefinition column, Term t)
+        public Setter(ColumnMetadata column, Term t)
         {
             super(column, t);
         }
@@ -371,7 +441,7 @@ public abstract class Constants
 
     public static class Adder extends Operation
     {
-        public Adder(ColumnDefinition column, Term t)
+        public Adder(ColumnMetadata column, Term t)
         {
             super(column, t);
         }
@@ -391,7 +461,7 @@ public abstract class Constants
 
     public static class Substracter extends Operation
     {
-        public Substracter(ColumnDefinition column, Term t)
+        public Substracter(ColumnMetadata column, Term t)
         {
             super(column, t);
         }
@@ -416,7 +486,7 @@ public abstract class Constants
     // duplicating this further
     public static class Deleter extends Operation
     {
-        public Deleter(ColumnDefinition column)
+        public Deleter(ColumnMetadata column)
         {
             super(column, null);
         }

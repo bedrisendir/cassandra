@@ -78,3 +78,4 @@ capiblock.jar
 
 # Generated files from the documentation
 doc/source/configuration/cassandra_config_file.rst
+doc/source/tools/nodetool
