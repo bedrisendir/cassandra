@@ -41,6 +41,7 @@ import org.apache.cassandra.schema.TableId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.ibm.research.capiblock.CapiBlockDevice;
 
 public class CAPIFlashCommitLog implements ICommitLog {
@@ -214,5 +215,17 @@ public class CAPIFlashCommitLog implements ICommitLog {
 		fsm.hasAvailableSegments.register(Metrics
 				.timer(new DefaultNameFactory("CAPIFlashCommitlog").createMetricName("WaitingOnSegmentAllocation")).time())
 				.awaitUninterruptibly();
+	}
+	
+	@VisibleForTesting
+	public void reset() {
+		try {
+			logger.error("Resetting FlashSegmentManager!!");
+			fsm = new FlashSegmentManager(CapiBlockDevice.getInstance().openChunk(DEVICES[0]));
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
 	}
 }
